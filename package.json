@@ -11,7 +11,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start:prod": "node dist/server.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

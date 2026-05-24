@@ -22,12 +22,13 @@
  *   - 2MB request bodyLimit; per-route Zod caps narrow it further.
  */
 
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
-import { loadConfig } from "./config.js";
+import { pathToFileURL } from "url";
+import { loadConfig, type AppConfig } from "./config.js";
 import { registerFindCutPoint } from "./routes/find-cut-point.js";
 import { registerContext } from "./routes/context.js";
 import { registerContexts } from "./routes/contexts.js";
@@ -105,11 +106,26 @@ function isLoopbackHost(hostHeader: string | undefined, port: number): boolean {
   return allowed.has(host);
 }
 
-async function main() {
-  const config = loadConfig();
+/**
+ * Build the configured Fastify instance: security onRequest hook, auth token,
+ * and all routes registered. Does NOT call listen() — the caller decides whether
+ * to bind a port (main()) or drive it via .inject() (tests).
+ *
+ * Returns the app plus the resolved auth token / token path so tests can supply
+ * a valid X-Recap-Token without re-reading the token file.
+ *
+ * `logger` defaults to false so tests stay quiet; main() turns it on.
+ */
+export interface BuiltApp {
+  app: FastifyInstance;
+  authToken: string;
+  tokenPath: string;
+}
+
+export function buildApp(config: AppConfig, opts: { logger?: boolean } = {}): BuiltApp {
   // bodyLimit caps the request body at 2MB so an oversized POST can't exhaust
   // memory before route-level validation runs.
-  const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
+  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 2 * 1024 * 1024 });
 
   // ─── Auth token ─────────────────────────────────────────────────────────────
   const { token: authToken, tokenPath } = ensureAuthToken();
@@ -182,6 +198,13 @@ async function main() {
   registerContexts(app, config);
   registerSurgery(app, config);
 
+  return { app, authToken, tokenPath };
+}
+
+async function main() {
+  const config = loadConfig();
+  const { app } = buildApp(config, { logger: true });
+
   try {
     await app.listen({ port: config.server.port, host: config.server.host });
     app.log.info(`recap-server listening on http://${config.server.host}:${config.server.port}`);
@@ -192,4 +215,12 @@ async function main() {
   }
 }
 
-main();
+// Only auto-start when run directly (not when imported by tests).
+// Under tsx/node ESM, import.meta.url matches argv[1] when executed as the entry.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main();
+}
