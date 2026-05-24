@@ -35,10 +35,10 @@ function hash(filePath: string): string {
 }
 
 describe("surgery boundaries", () => {
-  it("cut_through_uuid not found -> ok:false, file untouched", () => {
+  it("cut_through_uuid not found -> ok:false, file untouched", async () => {
     const w = track(makeWorkspace());
     const before = hash(w.filePath);
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: "uuid-does-not-exist",
       recap_content: RECAP_BODY,
@@ -52,11 +52,11 @@ describe("surgery boundaries", () => {
     expect(fs.existsSync(w.backupDir)).toBe(false);
   });
 
-  it("cut_through_uuid inside leading recap range + force_overwrite_recap=false -> rejected", () => {
+  it("cut_through_uuid inside leading recap range + force_overwrite_recap=false -> rejected", async () => {
     // The fixture's leading recap is sess-uuid-00. Targeting it should be rejected.
     const w = track(makeWorkspace());
     const before = hash(w.filePath);
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: "sess-uuid-00",
       recap_content: RECAP_BODY,
@@ -69,10 +69,10 @@ describe("surgery boundaries", () => {
     expect(hash(w.filePath)).toBe(before);
   });
 
-  it("recap_content missing the sentinel -> rejected", () => {
+  it("recap_content missing the sentinel -> rejected", async () => {
     const w = track(makeWorkspace());
     const before = hash(w.filePath);
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: "sess-uuid-10",
       recap_content: "Just a plain recap with no sentinel marker at all.",
@@ -85,9 +85,9 @@ describe("surgery boundaries", () => {
     expect(hash(w.filePath)).toBe(before);
   });
 
-  it("empty file -> handled without crash (cut_through not found)", () => {
+  it("empty file -> handled without crash (cut_through not found)", async () => {
     const w = track(workspaceFromText(""));
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: "sess-uuid-10",
       recap_content: RECAP_BODY,
@@ -98,15 +98,24 @@ describe("surgery boundaries", () => {
     expect(res.diagnostics.total_lines_before).toBe(0);
   });
 
-  it("single-record file -> handled without crash", () => {
+  it("single-record file -> handled without crash", async () => {
     const single = {
       uuid: "only-1",
       parentUuid: null,
       type: "assistant",
+      // Carrier fields present so the recap can inherit them (surgery now copies
+      // permissionMode/version/etc. from a sample record and fails loud if absent).
+      permissionMode: "acceptEdits",
+      userType: "external",
+      entrypoint: "cli",
+      cwd: "/home/user/project",
+      sessionId: "11111111-1111-1111-1111-111111111111",
+      version: "2.1.92",
+      gitBranch: "main",
       message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "hi" }] },
     };
     const w = track(workspaceFromText(JSON.stringify(single) + "\n"));
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: "only-1",
       recap_content: RECAP_BODY,
@@ -119,7 +128,7 @@ describe("surgery boundaries", () => {
     expect(res.diagnostics.total_lines_after).toBe(1);
   });
 
-  it("all-records-are-recaps file -> cut inside leading recaps is rejected", () => {
+  it("all-records-are-recaps file -> cut inside leading recaps is rejected", async () => {
     const recapLine = (i: number) =>
       JSON.stringify({
         uuid: `r-${i}`,
@@ -134,7 +143,7 @@ describe("surgery boundaries", () => {
     const w = track(workspaceFromText(text));
     const before = hash(w.filePath);
     // Every record is a leading recap; any cut target sits within them.
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: "r-2",
       recap_content: RECAP_BODY,
@@ -146,7 +155,7 @@ describe("surgery boundaries", () => {
     expect(hash(w.filePath)).toBe(before);
   });
 
-  it("tail_orphan_only: lone tool_use in the final assistant record -> flag true", () => {
+  it("tail_orphan_only: lone tool_use in the final assistant record -> flag true", async () => {
     // Build: leading recap (0), a complete pair (1,2), then the cut target (3),
     // then a final assistant record holding a single unmatched tool_use (4).
     // After cutting through uuid-3, survivors = [record 4] -> last record is an
@@ -156,6 +165,14 @@ describe("surgery boundaries", () => {
         uuid: "u0",
         parentUuid: null,
         type: "user",
+        // Carrier fields (copied by surgery into the new recap; fail-loud if absent).
+        permissionMode: "acceptEdits",
+        userType: "external",
+        entrypoint: "cli",
+        cwd: "/home/user/project",
+        sessionId: "11111111-1111-1111-1111-111111111111",
+        version: "2.1.92",
+        gitBranch: "main",
         message: { role: "user", content: `{"sentinel":"${SENTINEL}","id":"recap-001"} leading recap` },
       }),
       JSON.stringify({
@@ -184,7 +201,7 @@ describe("surgery boundaries", () => {
       }),
     ];
     const w = track(workspaceFromText(lines.join("\n") + "\n"));
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: "u3",
       recap_content: RECAP_BODY,
@@ -199,10 +216,10 @@ describe("surgery boundaries", () => {
     expect(pb?.tail_orphan_only).toBe(true);
   });
 
-  it("file_not_found -> ok:false without crash", () => {
+  it("file_not_found -> ok:false without crash", async () => {
     const w = track(makeWorkspace());
     const missing = w.filePath.replace("session.jsonl", "nope.jsonl");
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: missing,
       cut_through_uuid: "sess-uuid-10",
       recap_content: RECAP_BODY,
@@ -213,7 +230,7 @@ describe("surgery boundaries", () => {
     expect(res.reason).toBe("file_not_found");
   });
 
-  it("baseline: the committed fixture is never mutated by these tests", () => {
+  it("baseline: the committed fixture is never mutated by these tests", async () => {
     // Sanity guard — fixtureText reads the real fixture; just confirm it still
     // contains the original recap-001 sentinel and 30 lines.
     const text = fixtureText();

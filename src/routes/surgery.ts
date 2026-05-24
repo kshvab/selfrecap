@@ -51,7 +51,7 @@ export function registerSurgery(app: FastifyInstance, config: AppConfig) {
       return reply.status(400).send({ error: "path_resolution_failed", message: e.message });
     }
 
-    const result = performSurgery({
+    const result = await performSurgery({
       file_path: resolved.path,
       cut_through_uuid: body.cut_through_uuid,
       recap_content: body.recap_content,
@@ -63,7 +63,18 @@ export function registerSurgery(app: FastifyInstance, config: AppConfig) {
       force_overwrite_recap: body.force_overwrite_recap,
     });
 
-    return reply.status(result.ok ? 200 : 400).send({
+    // A write_failed (or any post-write/validation failure) is a server-side
+    // failure, not a bad request — surface those as 500. Plan-level rejections
+    // (bad uuid, sentinel missing, etc.) remain 400 (caller can fix the input).
+    const serverSideFailure =
+      !result.ok &&
+      (result.reason?.startsWith("write_failed") ||
+        result.reason?.startsWith("backup_failed") ||
+        result.reason?.startsWith("post_write_validation_failed") ||
+        result.reason?.startsWith("concurrent_modification"));
+    const status = result.ok ? 200 : serverSideFailure ? 500 : 400;
+
+    return reply.status(status).send({
       ...result,
       voice: resolved.voice,
     });

@@ -38,10 +38,10 @@ function newWorkspace(): TempWorkspace {
 }
 
 describe("surgery invariants (dry run)", () => {
-  it("reports a valid plan without mutating the file", () => {
+  it("reports a valid plan without mutating the file", async () => {
     const w = newWorkspace();
     const before = fs.readFileSync(w.filePath, "utf8");
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: CUT_UUID,
       recap_content: RECAP_BODY,
@@ -58,9 +58,9 @@ describe("surgery invariants (dry run)", () => {
 });
 
 describe("surgery invariants (real)", () => {
-  it("parentUuid chain is unbroken from new recap to last surviving record", () => {
+  it("parentUuid chain is unbroken from new recap to last surviving record", async () => {
     const w = newWorkspace();
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: CUT_UUID,
       recap_content: RECAP_BODY,
@@ -78,7 +78,7 @@ describe("surgery invariants (real)", () => {
     }
   });
 
-  it("no surviving record points at a uuid that was in the cut range", () => {
+  it("no surviving record points at a uuid that was in the cut range", async () => {
     const w = newWorkspace();
     // Cut range (after the leading recap) is sess-uuid-01..sess-uuid-10 inclusive.
     const cutRangeUuids = new Set(
@@ -87,7 +87,7 @@ describe("surgery invariants (real)", () => {
         .map((r) => r.uuid)
         .filter((u): u is string => typeof u === "string"),
     );
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: CUT_UUID,
       recap_content: RECAP_BODY,
@@ -104,9 +104,9 @@ describe("surgery invariants (real)", () => {
     }
   });
 
-  it("tool_use ids match tool_result ids (zero orphans) for a non-splitting cut", () => {
+  it("tool_use ids match tool_result ids (zero orphans) for a non-splitting cut", async () => {
     const w = newWorkspace();
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: CUT_UUID,
       recap_content: RECAP_BODY,
@@ -133,11 +133,11 @@ describe("surgery invariants (real)", () => {
     expect([...useIds].sort()).toEqual([...resultIds].sort());
   });
 
-  it("preserves N leading recaps and inserts one more (N -> N+1)", () => {
+  it("preserves N leading recaps and inserts one more (N -> N+1)", async () => {
     const w = newWorkspace();
     // Fixture has exactly 1 leading recap.
     const leadingBefore = 1;
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: CUT_UUID,
       recap_content: RECAP_BODY,
@@ -158,9 +158,9 @@ describe("surgery invariants (real)", () => {
     expect(count).toBe(leadingBefore + 1);
   });
 
-  it("new_recap_position equals leading_recaps_preserved", () => {
+  it("new_recap_position equals leading_recaps_preserved", async () => {
     const w = newWorkspace();
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: CUT_UUID,
       recap_content: RECAP_BODY,
@@ -176,10 +176,10 @@ describe("surgery invariants (real)", () => {
     expect(out[pos]?.uuid).toBe(res.diagnostics.new_recap_uuid);
   });
 
-  it("writes a backup of the original before mutating", () => {
+  it("writes a backup of the original before mutating", async () => {
     const w = newWorkspace();
     const originalText = fs.readFileSync(FIXTURE_PATH, "utf8");
-    const res = performSurgery({
+    const res = await performSurgery({
       file_path: w.filePath,
       cut_through_uuid: CUT_UUID,
       recap_content: RECAP_BODY,

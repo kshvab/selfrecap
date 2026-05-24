@@ -8,23 +8,16 @@
 
 import type { FastifyInstance } from "fastify";
 import fs from "fs";
-import { readContextSize } from "../lib/monitor.js";
+import { readContextSize, type ContextReading } from "../lib/monitor.js";
 import type { AppConfig } from "../config.js";
 
-interface VoiceContextEntry {
+// A per-voice entry is the shared ContextReading projection (minus `voice`,
+// which is the map key, and `file`, which we never expose here) plus liveness
+// fields. Derived from ContextReading so the field set can't drift out of sync.
+type VoiceContextEntry = {
   exists: boolean;
   error?: string;
-  tokens_total?: number;
-  percent_of_1m?: number;
-  input_tokens?: number;
-  cache_read_tokens?: number;
-  cache_creation_tokens?: number;
-  output_tokens?: number;
-  file_size_bytes?: number;
-  line_count?: number;
-  last_usage_ts?: string | null;
-  last_usage_line_idx?: number;
-}
+} & Partial<Omit<ContextReading, "voice" | "file">>;
 
 export function registerContexts(app: FastifyInstance, config: AppConfig) {
   app.get("/contexts", async () => {
@@ -41,22 +34,10 @@ export function registerContexts(app: FastifyInstance, config: AppConfig) {
           if (!reading) {
             return [name, { exists: false, error: "no_usage_entries" }];
           }
-          return [
-            name,
-            {
-              exists: true,
-              tokens_total: reading.tokens_total,
-              percent_of_1m: reading.percent_of_1m,
-              input_tokens: reading.input_tokens,
-              cache_read_tokens: reading.cache_read_tokens,
-              cache_creation_tokens: reading.cache_creation_tokens,
-              output_tokens: reading.output_tokens,
-              file_size_bytes: reading.file_size_bytes,
-              line_count: reading.line_count,
-              last_usage_ts: reading.last_usage_ts,
-              last_usage_line_idx: reading.last_usage_line_idx,
-            },
-          ];
+          // Drop `voice` (the map key) and `file` (never exposed here); keep the
+          // rest of the shared ContextReading projection verbatim.
+          const { voice: _voice, file: _file, ...metrics } = reading;
+          return [name, { exists: true, ...metrics }];
         } catch (e: any) {
           return [name, { exists: false, error: `read_failed: ${e.message}` }];
         }

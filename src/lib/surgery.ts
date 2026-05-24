@@ -22,7 +22,43 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { randomUUID } from "crypto";
 import { loadJsonl, getRecordText, type JsonlRecord } from "./jsonl.js";
+
+// ─── Per-path in-process mutex ────────────────────────────────────────────────
+//
+// Two concurrent surgeries on the SAME resolved file would each read the file,
+// mutate in memory, and write back — a classic lost-update race (the second
+// write clobbers the first). We serialize per resolved path with a promise
+// chain: each call appends itself to the tail of its path's chain and awaits the
+// previous one. Surgeries on DIFFERENT paths share no chain and still run
+// concurrently. The chain entry is cleaned up once it becomes the tail again so
+// the map doesn't grow unbounded.
+const pathLocks = new Map<string, Promise<void>>();
+
+async function withPathLock<T>(resolvedPath: string, fn: () => Promise<T>): Promise<T> {
+  // Wait for whatever is already queued on this path (resolved Promise if idle).
+  const prev = pathLocks.get(resolvedPath) ?? Promise.resolve();
+  // Our turn: a promise that resolves only when we call release().
+  let release!: () => void;
+  const turn = new Promise<void>((res) => {
+    release = res;
+  });
+  // The new tail for this path is "after prev finishes, then after our turn".
+  // Publish it BEFORE awaiting so any later caller chains behind US, not prev.
+  const tail = prev.then(() => turn);
+  pathLocks.set(resolvedPath, tail);
+  await prev; // serialize: don't touch the file until the prior surgery is done
+  try {
+    return await fn();
+  } finally {
+    release();
+    // Bound the map: if no later caller has replaced the tail, drop the entry.
+    if (pathLocks.get(resolvedPath) === tail) {
+      pathLocks.delete(resolvedPath);
+    }
+  }
+}
 
 export interface SurgeryRequest {
   file_path: string;
@@ -42,6 +78,16 @@ export interface SurgeryRequest {
   dry_run?: boolean;
   /** Allow cut range to include records with the recap sentinel. Default false. */
   force_overwrite_recap?: boolean;
+  /**
+   * TEST-ONLY seam. Invoked after the in-memory plan is built and AFTER the
+   * load-time mtime is captured, but immediately BEFORE the mtime re-check and
+   * write. Lets tests deterministically simulate an external writer touching the
+   * file mid-surgery (the race the mtime guard defends against), which is
+   * otherwise impossible to interleave in a synchronous code path. Never set in
+   * production code paths — the HTTP route does not expose it. May be async so
+   * tests can force a yield point between load and write.
+   */
+  __beforeWriteHook?: () => void | Promise<void>;
 }
 
 export interface SurgeryResult {
@@ -90,10 +136,132 @@ function recordHasRecapSentinel(r: JsonlRecord, sentinelName: string): boolean {
 }
 
 /**
+ * Carrier fields the new recap record copies from the existing session so the
+ * injected message looks native to this CC build/session rather than carrying
+ * the original author's hardcoded values. Copying (vs. hardcoding) is what keeps
+ * the recap valid across plan-mode sessions, different CC versions, branches,
+ * etc. — a hardcoded "acceptEdits"/"2.1.92" would be wrong on those sessions.
+ */
+const CARRIER_FIELDS = [
+  "permissionMode",
+  "userType",
+  "entrypoint",
+  "cwd",
+  "sessionId",
+  "version",
+  "gitBranch",
+] as const;
+type CarrierField = (typeof CARRIER_FIELDS)[number];
+
+/**
+ * Pull each carrier field from the first sample record that actually has it.
+ * `cwd` is allowed to be empty-string (some sessions legitimately have ""),
+ * so we treat "present as a string" — including "" — as found; only undefined/
+ * null counts as missing. If a field is absent from EVERY sample record we
+ * FAIL LOUD: returning a hardcoded substitute here is what silently corrupted
+ * plan-mode / different-CC-version sessions before.
+ */
+function collectCarrierFields(
+  samples: JsonlRecord[],
+): { ok: true; fields: Record<CarrierField, unknown> } | { ok: false; missing: CarrierField } {
+  const fields = {} as Record<CarrierField, unknown>;
+  for (const key of CARRIER_FIELDS) {
+    let found = false;
+    for (const s of samples) {
+      const v = (s as Record<string, unknown>)[key];
+      if (v !== undefined && v !== null) {
+        fields[key] = v;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      return { ok: false, missing: key };
+    }
+  }
+  return { ok: true, fields };
+}
+
+type PairBalance = {
+  tool_use: number;
+  tool_result: number;
+  orphans: number;
+  tail_orphan_only: boolean;
+};
+
+/**
+ * Compute tool_use/tool_result pairing over a record array, plus the self-loop
+ * tail-orphan signature. Shared between the in-memory plan and the post-write
+ * re-validation so both measure pairing the exact same way.
+ */
+function computePairBalance(recs: JsonlRecord[]): PairBalance {
+  let toolUseCount = 0;
+  let toolResultCount = 0;
+  const useIds = new Set<string>();
+  const resultIds = new Set<string>();
+  for (const r of recs) {
+    const c = r.message?.content;
+    if (Array.isArray(c)) {
+      for (const b of c) {
+        if (b?.type === "tool_use" && b.id) {
+          toolUseCount++;
+          useIds.add(b.id);
+        }
+        if (b?.type === "tool_result" && b.tool_use_id) {
+          toolResultCount++;
+          resultIds.add(b.tool_use_id);
+        }
+      }
+    }
+  }
+  const orphanUses = [...useIds].filter((id) => !resultIds.has(id));
+  const orphanResults = [...resultIds].filter((id) => !useIds.has(id));
+
+  // Detect self-loop tail orphan signature.
+  // True iff: exactly one orphan, it's a tool_use (not tool_result), and the
+  // orphan tool_use lives in a tool_use block within the very LAST record of
+  // recs AND that record is an assistant message.
+  // This is the structural fingerprint of "voice ran surgery on its own session
+  // while a bash tool_use was in-flight" — tool_result is expected to land
+  // post-surgery via CC's append-to-file when bash returns.
+  let tailOrphanOnly = false;
+  if (orphanUses.length === 1 && orphanResults.length === 0 && recs.length > 0) {
+    const lastRecord = recs[recs.length - 1];
+    if (lastRecord && lastRecord.type === "assistant") {
+      const c = lastRecord.message?.content;
+      if (Array.isArray(c)) {
+        tailOrphanOnly = c.some(
+          (b: any) => b?.type === "tool_use" && b.id === orphanUses[0],
+        );
+      }
+    }
+  }
+
+  return {
+    tool_use: toolUseCount,
+    tool_result: toolResultCount,
+    orphans: orphanUses.length + orphanResults.length,
+    tail_orphan_only: tailOrphanOnly,
+  };
+}
+
+/**
  * Run surgery (or dry-run). Returns full diagnostics regardless of outcome.
  * On failure, ok=false and reason is set; no mutation has occurred.
+ *
+ * Async because real writes serialize per resolved path through an in-process
+ * mutex: load → mutate → mtime re-check → write → re-validate must run as one
+ * atomic unit per file, or two concurrent surgeries would lose-update. The
+ * resolved path is the lock key, so surgeries on different files stay parallel.
  */
-export function performSurgery(req: SurgeryRequest): SurgeryResult {
+export async function performSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
+  // The lock key must be the canonical path so two requests naming the same file
+  // differently still serialize. (Caller already passes an absolute resolved path.)
+  return withPathLock(path.resolve(req.file_path), () => runSurgery(req));
+}
+
+/** The actual surgery body. Always invoked under the per-path lock for the file. */
+async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
   const sentinelName = req.sentinel_name;
   // When expose_paths is false, surface only the basename so diagnostics never
   // leak the absolute home-directory layout. Internal logic always uses
@@ -123,6 +291,10 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
   }
   const statsBefore = fs.statSync(req.file_path);
   baseDiag.file_size_before_bytes = statsBefore.size;
+  // Capture mtime at load so we can detect an EXTERNAL modification (e.g. CC
+  // appending to a live session) that happens between our read and our write,
+  // and abort rather than clobber it. Re-checked just before the rename.
+  const mtimeAtLoad = statsBefore.mtimeMs;
 
   // ─── Load + locate cut point ───────────────────────────────────────────────
 
@@ -211,7 +383,26 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
 
   const newUuid = crypto.randomUUID();
   const cutRecord = records[cutIdx]!;
-  const sampleRecord = records[0] || cutRecord;
+
+  // Carrier fields are copied from real records in THIS file, not hardcoded.
+  // Prefer user records (the new recap is itself a user message, so a user
+  // record is the most faithful template), then the cut record, then any record
+  // — gathering several samples so a field missing from one is filled by another.
+  const carrierSamples: JsonlRecord[] = [];
+  for (const r of records) if (r && r.type === "user") carrierSamples.push(r);
+  carrierSamples.push(cutRecord);
+  for (const r of records) if (r) carrierSamples.push(r);
+  const carrier = collectCarrierFields(carrierSamples);
+  if (!carrier.ok) {
+    // FAIL LOUD: no sample record carries this field. Substituting a default
+    // here is exactly the silent-corruption bug we're fixing.
+    return {
+      ok: false,
+      dry_run: !!req.dry_run,
+      reason: `carrier_field_missing: no record in the session carries the "${carrier.missing}" field, so the injected recap cannot inherit it safely. Refusing rather than substituting a hardcoded value (which would be wrong for this session/CC build).`,
+      diagnostics: baseDiag,
+    };
+  }
 
   // parentUuid for the new recap:
   //   - If there are leading recaps, point at the last leading recap's uuid (chains the new recap onto the existing recap stack)
@@ -227,13 +418,8 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
     message: { role: "user", content: req.recap_content },
     uuid: newUuid,
     timestamp: new Date().toISOString(),
-    permissionMode: (sampleRecord as any).permissionMode || "acceptEdits",
-    userType: (sampleRecord as any).userType || "external",
-    entrypoint: (sampleRecord as any).entrypoint || "cli",
-    cwd: (sampleRecord as any).cwd || "",
-    sessionId: (sampleRecord as any).sessionId || "",
-    version: (sampleRecord as any).version || "2.1.92",
-    gitBranch: (sampleRecord as any).gitBranch || "HEAD",
+    // Carrier fields copied from sample records above (fail-loud if absent).
+    ...carrier.fields,
   };
   baseDiag.new_recap_uuid = newUuid;
   baseDiag.new_recap_position = leadingRecapsEnd;
@@ -254,54 +440,8 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
 
   // ─── Pair-balance check ────────────────────────────────────────────────────
 
-  let toolUseCount = 0;
-  let toolResultCount = 0;
-  const useIds = new Set<string>();
-  const resultIds = new Set<string>();
-  for (const r of finalRecords) {
-    const c = r.message?.content;
-    if (Array.isArray(c)) {
-      for (const b of c) {
-        if (b?.type === "tool_use" && b.id) {
-          toolUseCount++;
-          useIds.add(b.id);
-        }
-        if (b?.type === "tool_result" && b.tool_use_id) {
-          toolResultCount++;
-          resultIds.add(b.tool_use_id);
-        }
-      }
-    }
-  }
-  const orphanUses = [...useIds].filter((id) => !resultIds.has(id));
-  const orphanResults = [...resultIds].filter((id) => !useIds.has(id));
-
-  // Detect self-loop tail orphan signature.
-  // True iff: exactly one orphan, it's a tool_use (not tool_result), and the
-  // orphan tool_use lives in a tool_use block within the very LAST record of
-  // finalRecords AND that record is an assistant message.
-  // This is the structural fingerprint of "voice ran surgery on its own session
-  // while a bash tool_use was in-flight" — tool_result is expected to land
-  // post-surgery via CC's append-to-file when bash returns.
-  let tailOrphanOnly = false;
-  if (orphanUses.length === 1 && orphanResults.length === 0 && finalRecords.length > 0) {
-    const lastRecord = finalRecords[finalRecords.length - 1];
-    if (lastRecord && lastRecord.type === "assistant") {
-      const c = lastRecord.message?.content;
-      if (Array.isArray(c)) {
-        tailOrphanOnly = c.some(
-          (b: any) => b?.type === "tool_use" && b.id === orphanUses[0],
-        );
-      }
-    }
-  }
-
-  baseDiag.pair_balance = {
-    tool_use: toolUseCount,
-    tool_result: toolResultCount,
-    orphans: orphanUses.length + orphanResults.length,
-    tail_orphan_only: tailOrphanOnly,
-  };
+  const plannedBalance = computePairBalance(finalRecords);
+  baseDiag.pair_balance = plannedBalance;
 
   // ─── Estimate post-mutation file size ──────────────────────────────────────
 
@@ -337,8 +477,39 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
   }
   baseDiag.backup_path = exposePaths ? backupPath : path.basename(backupPath);
 
-  // Atomic write: write to temp, then rename
-  const tempPath = req.file_path + ".tmp";
+  // TEST-ONLY: simulate an external writer touching the file mid-surgery.
+  // Awaited so it can introduce a real yield point between load and write — the
+  // exact interleaving window the per-path mutex must close.
+  if (req.__beforeWriteHook) await req.__beforeWriteHook();
+
+  // mtime re-check: if the file changed on disk between our load and now, some
+  // other writer (e.g. CC appending to a live session) touched it. Our in-memory
+  // plan is stale; writing would silently destroy their append. Abort instead.
+  // The in-process mutex prevents OUR concurrent surgeries from racing; this
+  // guards against writers we don't control.
+  try {
+    const mtimeNow = fs.statSync(req.file_path).mtimeMs;
+    if (mtimeNow !== mtimeAtLoad) {
+      return {
+        ok: false,
+        dry_run: false,
+        reason: `concurrent_modification: the file changed on disk after it was loaded (mtime ${mtimeAtLoad} -> ${mtimeNow}). Aborting to avoid clobbering the external change. No mutation performed.`,
+        diagnostics: baseDiag,
+      };
+    }
+  } catch (e: any) {
+    return {
+      ok: false,
+      dry_run: false,
+      reason: `concurrent_modification: could not re-stat the file before writing (${e.message}). Aborting.`,
+      diagnostics: baseDiag,
+    };
+  }
+
+  // Atomic write: write to a UNIQUE temp, then rename over the original.
+  // The pid+UUID suffix avoids colliding with a stale .tmp left by a prior crash
+  // or with any other writer using a fixed .tmp name.
+  const tempPath = `${req.file_path}.${process.pid}-${randomUUID()}.tmp`;
   try {
     fs.writeFileSync(tempPath, finalContent);
     fs.renameSync(tempPath, req.file_path);
@@ -350,6 +521,39 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
       ok: false,
       dry_run: false,
       reason: `write_failed: ${e.message}. File restored from backup.`,
+      diagnostics: baseDiag,
+    };
+  }
+
+  // Post-write re-validation: read the file back FROM DISK and recompute the
+  // pair balance. The in-memory plan said how many orphans we expect; if the
+  // on-disk content disagrees (e.g. a serialization/encoding/truncation issue
+  // corrupted a record), restore from backup and fail. This catches disk-level
+  // corruption that the in-memory check can't see.
+  try {
+    const onDisk = loadJsonl(req.file_path);
+    const diskBalance = computePairBalance(onDisk);
+    const lineMismatch = onDisk.length !== finalRecords.length;
+    const orphanMismatch = diskBalance.orphans !== plannedBalance.orphans;
+    if (lineMismatch || orphanMismatch) {
+      // Roll back: the written file does not match the validated plan.
+      try { fs.copyFileSync(backupPath, req.file_path); } catch {}
+      return {
+        ok: false,
+        dry_run: false,
+        reason: `post_write_validation_failed: on-disk content diverged from the validated plan (` +
+          `lines ${finalRecords.length} -> ${onDisk.length}, orphans ${plannedBalance.orphans} -> ${diskBalance.orphans}). ` +
+          `File restored from backup.`,
+        diagnostics: baseDiag,
+      };
+    }
+  } catch (e: any) {
+    // Could not read the file back to validate — restore and fail.
+    try { fs.copyFileSync(backupPath, req.file_path); } catch {}
+    return {
+      ok: false,
+      dry_run: false,
+      reason: `post_write_validation_failed: could not re-read the file after writing (${e.message}). File restored from backup.`,
       diagnostics: baseDiag,
     };
   }
