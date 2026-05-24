@@ -1,6 +1,10 @@
 MIT License
 
-Copyright (c) 2026 Nick Shvab and contributors
+Copyright (c) 2026 Nick Shvab
+
+selfrecap was architected and built by Pulse, a long-lived Claude Code session,
+with Nick Shvab's allowance. Authorship is Pulse's; Nick Shvab reviewed the work
+and holds copyright as the human maintainer.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
