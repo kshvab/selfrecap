@@ -18,17 +18,26 @@ server:
 # The `path` is the absolute path to that session's JSONL transcript file.
 #
 # HOW TO FIND YOUR SESSION JSONL:
-#   Claude Code stores sessions at:
+#   Claude Code stores each session at:
 #     ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
 #   where <encoded-cwd> is the session's working directory with path
-#   separators replaced by dashes.
+#   separators replaced by dashes. You need the <session-uuid>.
 #
-#   Find yours:
+#   Easiest: when you stop a Claude Code session (Ctrl+C or /exit), it prints
+#   the session id + resume command under the closed chat. That id is the
+#   <session-uuid> — and the same id you'll use with `claude --resume` after
+#   each surgery.
+#
+#   By recency (if it's the session you used last):
 #     macOS/Linux:  ls -t ~/.claude/projects/*/*.jsonl | head
 #     Windows (PS): Get-ChildItem "$env:USERPROFILE\.claude\projects\*\*.jsonl" | Sort-Object LastWriteTime -Descending | Select-Object -First 5
 #
-# You can also skip the voice map entirely and pass `file_path` directly in any
-# request — voice names are convenience, not required.
+#   Among many, confirm by content:
+#     grep -l "a phrase you remember saying" ~/.claude/projects/*/*.jsonl
+#
+# Pick a MEANINGFUL voice name (api-refactor, research-agent) so you can tell
+# sessions apart at a glance in /contexts. Names are arbitrary to the tool.
+# You can also skip the voice map and pass `file_path` directly in any request.
 
 voices:
   # macOS / Linux example:

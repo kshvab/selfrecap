@@ -14,6 +14,16 @@ Long-lived Claude Code sessions eventually fill the context window. The built-in
 
 This is a real file-mutation tool. It rewrites the JSONL transcript that Claude Code reads on resume. It always writes a timestamped backup first, supports a dry-run mode that changes nothing, and enforces safety invariants (the cut target must exist, the recap must carry a sentinel marker, prior recaps are preserved) before touching a byte. Read [SECURITY.md](./SECURITY.md) before you point it anywhere but your own machine.
 
+### When you'd reach for this
+
+Three situations where recap surgery earns its keep over `/compact`:
+
+- **Long decision-context.** A session carrying days of accumulated decisions, conventions, and reasoning — where *why* things are the way they are lives in the conversation, not just the code. Auto-compaction flattens that reasoning into a generic summary; a self-authored recap keeps it in the session's own terms.
+- **Long autonomous runs that must not die mid-process.** An orchestrator session driving a long multi-stage job, or any agent on a many-hour autonomous run, will eventually approach the context wall. Hitting it mid-work is the bad outcome — the run stalls with the work half-done. recap-cycle lets the session shed the context of *completed* phases and keep going on the same thread, so a long job survives to completion instead of dying at the ceiling.
+- **Identity continuity across sessions.** For long-lived personas where the session is a recognizable working partner, recognition-instead-of-replacement is the whole point.
+
+**Why a restart (`--resume`), not a fresh session.** The payoff depends on resuming the *same* session id after surgery. Same id + rewritten transcript means the session comes back **as itself** with a freed context budget — continuing, not restarting. Starting a new session instead would throw away the live continuity that is the entire reason to do this. The surgery rewrites the file; `claude --resume <session-id>` is what loads the rewritten file into the same continuing session. (See [docs/cache-mechanics.md](./docs/cache-mechanics.md) for why a live reload isn't possible and a restart is required.)
+
 ### A note on "voice"
 
 A **voice** is a configurable short name for one of your Claude Code sessions (for example `my-session` or `voice-a`). The term reflects this tool's origin — identity-preserving recaps for long-lived AI personas, where each session is a recognizable voice. Call them whatever you like; voice names are convenience, and you can always pass a `file_path` directly instead.
@@ -62,7 +72,11 @@ See [`config.example.yaml`](./config.example.yaml) for the fully commented versi
 
 ### Finding your session file
 
-Claude Code stores transcripts at `~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`, where `<encoded-cwd>` is the session's working directory with path separators replaced by dashes.
+Each Claude Code session is one JSONL transcript at `~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`, where `<encoded-cwd>` is the session's working directory with path separators replaced by dashes. You need the `<session-uuid>` of the session you want to give continuity to.
+
+**Easiest — read it off exit.** When you stop a Claude Code session (Ctrl+C, or `/exit`), it prints the session id and the resume command under the closed chat. That id is exactly what you want: the JSONL is `<session-uuid>.jsonl`, and you'll resume with `claude --resume <session-uuid>` after each surgery anyway.
+
+**By recency.** If the session you want is the one you used most recently:
 
 ```bash
 # macOS / Linux
@@ -73,6 +87,15 @@ ls -t ~/.claude/projects/*/*.jsonl | head
 # Windows PowerShell
 Get-ChildItem "$env:USERPROFILE\.claude\projects\*\*.jsonl" | Sort-Object LastWriteTime -Descending | Select-Object -First 5
 ```
+
+**Disambiguating among many.** With several sessions, confirm you grabbed the right one by checking its content for something you remember saying:
+
+```bash
+# macOS / Linux — show the file whose transcript contains a phrase you recall
+grep -l "the phrase I remember" ~/.claude/projects/*/*.jsonl
+```
+
+**Naming.** The voice name is yours to choose and is arbitrary to the tool — but pick something meaningful (`api-refactor`, `research-agent`) rather than `voice-1`, so when you watch `GET /contexts` across several sessions you can tell which is which at a glance.
 
 ### Production (pm2)
 
