@@ -1,0 +1,39 @@
+{
+  "name": "recap-cycle",
+  "version": "1.0.0",
+  "description": "HTTP API for Claude Code session continuity. Find clean cut points in JSONL session files, monitor context size, and perform self-authored recap surgery — an alternative to lossy auto-compaction for long-lived AI sessions.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start:prod": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "claude-code",
+    "context-window",
+    "session-continuity",
+    "jsonl",
+    "ai-memory",
+    "recap"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "zod": "^3.23.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0",
+    "@types/js-yaml": "^4.0.9",
+    "vitest": "^2.1.0"
+  }
+}

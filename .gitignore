@@ -1,0 +1,13 @@
+node_modules/
+dist/
+logs/
+*.log
+config.yaml
+backups/
+.env
+.DS_Store
+.idea/
+.vscode/
+.claude/
+~/.recap-server/
+coverage/

@@ -1,0 +1,71 @@
+# recap-cycle config — copy to config.yaml and edit for your machine.
+#
+#   cp config.example.yaml config.yaml
+#
+# config.yaml is git-ignored, so your real paths never get committed.
+
+server:
+  port: 9090
+  host: 127.0.0.1 # loopback only. Do not bind to 0.0.0.0 without adding TLS + real auth.
+
+# ─── Voices ──────────────────────────────────────────────────────────────────
+#
+# A "voice" is just a short, memorable name for one of your Claude Code
+# sessions. The term reflects this tool's origin — identity-preserving recaps
+# for long-lived AI personas, where each session is a recognizable voice. Call
+# them whatever you like (project-a, my-session, agent-1).
+#
+# The `path` is the absolute path to that session's JSONL transcript file.
+#
+# HOW TO FIND YOUR SESSION JSONL:
+#   Claude Code stores sessions at:
+#     ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
+#   where <encoded-cwd> is the session's working directory with path
+#   separators replaced by dashes.
+#
+#   Find yours:
+#     macOS/Linux:  ls -t ~/.claude/projects/*/*.jsonl | head
+#     Windows (PS): Get-ChildItem "$env:USERPROFILE\.claude\projects\*\*.jsonl" | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+#
+# You can also skip the voice map entirely and pass `file_path` directly in any
+# request — voice names are convenience, not required.
+
+voices:
+  # macOS / Linux example:
+  my-session:
+    path: "/Users/you/.claude/projects/-Users-you-projects-my-app/00000000-0000-0000-0000-000000000000.jsonl"
+
+  # Windows example:
+  another-session:
+    path: "C:/Users/you/.claude/projects/C--Users-you-projects-my-app/11111111-1111-1111-1111-111111111111.jsonl"
+
+# ─── Security ────────────────────────────────────────────────────────────────
+#
+# This server can REWRITE the files it operates on (the /surgery endpoint cuts
+# and rewrites JSONL). These guards keep it from being tricked into writing
+# files you didn't intend. Read SECURITY.md before exposing this beyond
+# localhost (don't, without adding TLS + real auth).
+
+# Only files resolving (after symlink resolution) under one of these roots may
+# be read or written. Leave as-is unless your sessions live elsewhere.
+allowed_roots:
+  - "~/.claude/projects/"
+
+# When false (default), filesystem paths are stripped from /voices, /contexts,
+# and surgery diagnostics responses — so a misconfigured public clone can't leak
+# your home directory layout. Set true only on a trusted local dashboard.
+expose_paths: false
+
+# ─── Recap sentinel ──────────────────────────────────────────────────────────
+#
+# Every injected recap message carries a sentinel marker in a JSON block so the
+# tool can recognize recaps (to preserve them across future cycles and to skip
+# them in cut-point searches). Default is RECAP-CYCLE. If you have existing
+# recaps authored with a different marker, set it here for backward compat.
+sentinel_name: "RECAP-CYCLE"
+
+# ─── Backups ─────────────────────────────────────────────────────────────────
+#
+# /surgery writes a timestamped backup of the target file here before any
+# cut-and-inject. Restore from here if a surgery goes wrong.
+backup_dir: "./backups"
