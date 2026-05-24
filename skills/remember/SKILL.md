@@ -1,13 +1,13 @@
 ---
 name: remember
-description: Recap surgery protocol — run when your context window approaches the wall (~80%+ of the 1M window). Find a clean cut point in your own JSONL transcript, author an in-voice recap of the period being cut, dry-run it, execute with --go, then report the restart commands to your operator. The AI-facing companion to the recap-cycle server; automates the manual flow in docs/walkthrough.md.
+description: Recap surgery protocol — run when your context window approaches the wall (~80%+ of the 1M window). Find a clean cut point in your own JSONL transcript, author an in-voice recap of the period being cut, dry-run it, execute with --go, then report the restart commands to your operator. The AI-facing companion to the selfrecap server; automates the manual flow in docs/walkthrough.md.
 ---
 
 # /remember — self-authored recap surgery
 
 > Slash-command body. Your operator invokes this when your context approaches threshold.
 > You execute the full workflow autonomously. The operator only restarts your terminal at the end.
-> This is the AI-facing companion to the `recap-cycle` HTTP server. It drives the same flow as
+> This is the AI-facing companion to the `selfrecap` HTTP server. It drives the same flow as
 > `docs/walkthrough.md`, but you run it on yourself without hand-holding.
 
 ---
@@ -30,20 +30,20 @@ Your job from this point: execute the full surgery autonomously. Find the right 
 
 This is a meaningful autonomy step. Take it seriously. The original deployment earned this trust across many clean cycles before yours; honor that by holding the procedure in good faith, not treating it as routine.
 
-A note on the server you are talking to. Everything below assumes the `recap-cycle` server is running locally — by default on `http://127.0.0.1:9090`, but the port is configurable (`server.port` in `config.yaml`), so if your operator runs it elsewhere, substitute that base URL throughout. The server is loopback-only and has a small security model you must respect: read the "Security and auth" box just below before you issue any request.
+A note on the server you are talking to. Everything below assumes the `selfrecap` server is running locally — by default on `http://127.0.0.1:9090`, but the port is configurable (`server.port` in `config.yaml`), so if your operator runs it elsewhere, substitute that base URL throughout. The server is loopback-only and has a small security model you must respect: read the "Security and auth" box just below before you issue any request.
 
 ### Security and auth — read once, applies throughout
 
 The server hardens its write surface. Three facts shape every command in this protocol:
 
 - **GET routes are token-free.** `/context`, `/contexts`, `/voices`, `/health` are GET. Origin and Host checks already block browsers, so reads need no token. The curl examples for these have no auth header.
-- **ALL POST routes require a token.** The server's request hook requires a valid `X-Recap-Token` header on *every* POST, not just `/surgery`. That means `/find-cut-point` (POST) needs the token too, even though it only reads. The header value is the per-machine token the server generated on first start, stored at `~/.recap-cycle/token`.
-- **The CLI helper handles the token for you.** `scripts/recap.ts` (the dry-run / execute path in Steps 6-7) reads `~/.recap-cycle/token` itself and sends the header. So the *primary* path needs no manual token handling. You only deal with the token when you hit a POST route directly with curl — and the examples below include it where needed.
+- **ALL POST routes require a token.** The server's request hook requires a valid `X-Recap-Token` header on *every* POST, not just `/surgery`. That means `/find-cut-point` (POST) needs the token too, even though it only reads. The header value is the per-machine token the server generated on first start, stored at `~/.selfrecap/token`.
+- **The CLI helper handles the token for you.** `scripts/recap.ts` (the dry-run / execute path in Steps 6-7) reads `~/.selfrecap/token` itself and sends the header. So the *primary* path needs no manual token handling. You only deal with the token when you hit a POST route directly with curl — and the examples below include it where needed.
 
 Cross-platform note for reading the token in a curl command:
 
-- macOS / Linux: `-H "X-Recap-Token: $(cat ~/.recap-cycle/token)"`
-- Windows PowerShell: `-H "X-Recap-Token: $(Get-Content $env:USERPROFILE\.recap-cycle\token)"`
+- macOS / Linux: `-H "X-Recap-Token: $(cat ~/.selfrecap/token)"`
+- Windows PowerShell: `-H "X-Recap-Token: $(Get-Content $env:USERPROFILE\.selfrecap\token)"`
 
 One more informational constraint: the server only operates on files under its configured `allowed_roots` (default `~/.claude/projects/`). A real Claude Code session's JSONL always lives there, so this never blocks you — it is mentioned only so the constraint isn't a surprise if you ever point the tool at a file elsewhere.
 
@@ -156,7 +156,7 @@ Search for a distinctive 6+ word phrase from the operator's boundary message:
 curl -s http://127.0.0.1:9090/find-cut-point \
   -X POST \
   -H "Content-Type: application/json" \
-  -H "X-Recap-Token: $(cat ~/.recap-cycle/token)" \
+  -H "X-Recap-Token: $(cat ~/.selfrecap/token)" \
   --data-binary @- <<'EOF'
 {
   "voice": "<your-voice>",
@@ -184,7 +184,7 @@ If you roughly know when the boundary happened (say around 09:30 today), combine
 curl -s http://127.0.0.1:9090/find-cut-point \
   -X POST \
   -H "Content-Type: application/json" \
-  -H "X-Recap-Token: $(cat ~/.recap-cycle/token)" \
+  -H "X-Recap-Token: $(cat ~/.selfrecap/token)" \
   --data-binary @- <<'EOF'
 {
   "voice": "<your-voice>",
@@ -402,10 +402,10 @@ If all yes → proceed to dry-run. If any no → revise. You're doing this alone
 
 ## Step 6 — Dry-run
 
-The CLI helper reads your body file, extracts the cut point from the sentinel, reads the auth token from `~/.recap-cycle/token`, and calls `/surgery` in dry-run mode. The token is handled for you here — no header to set:
+The CLI helper reads your body file, extracts the cut point from the sentinel, reads the auth token from `~/.selfrecap/token`, and calls `/surgery` in dry-run mode. The token is handled for you here — no header to set:
 
 ```bash
-cd <path-to>/recap-cycle
+cd <path-to>/selfrecap
 npx tsx scripts/recap.ts <your-voice> <full-path-to-body-file>
 ```
 
@@ -417,7 +417,7 @@ If you ever need to hit `/surgery` directly with curl instead of the helper, rem
 curl -s http://127.0.0.1:9090/surgery \
   -X POST \
   -H "Content-Type: application/json" \
-  -H "X-Recap-Token: $(cat ~/.recap-cycle/token)" \
+  -H "X-Recap-Token: $(cat ~/.selfrecap/token)" \
   -d '{"voice":"<your-voice>","cut_through_uuid":"<uuid>","recap_content":"<full body>","dry_run":true}'
 ```
 
@@ -447,7 +447,7 @@ If the diagnostics look right → proceed.
 ## Step 7 — Execute
 
 ```bash
-cd <path-to>/recap-cycle
+cd <path-to>/selfrecap
 npx tsx scripts/recap.ts <your-voice> <full-path-to-body-file> --go [--force]
 ```
 

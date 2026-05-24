@@ -1,6 +1,6 @@
 # Protocol: JSONL records and the recap sentinel
 
-This document specifies the two data shapes `recap-cycle` operates on: the Claude Code JSONL transcript record, and the recap sentinel that marks an injected recap. If you are integrating with the tool or extending it, this is the contract.
+This document specifies the two data shapes `selfrecap` operates on: the Claude Code JSONL transcript record, and the recap sentinel that marks an injected recap. If you are integrating with the tool or extending it, this is the contract.
 
 ---
 
@@ -14,7 +14,7 @@ Claude Code stores each session as a [JSON Lines](https://jsonlines.org/) file: 
 
 where `<encoded-cwd>` is the session's working directory with path separators replaced by dashes.
 
-`recap-cycle` reads these files to measure context size and locate cut points, and (only via `/surgery`) rewrites them. It never invents transcript structure — it preserves whatever Claude Code wrote and only cuts records, inserts one new record, and repairs parent pointers.
+`selfrecap` reads these files to measure context size and locate cut points, and (only via `/surgery`) rewrites them. It never invents transcript structure — it preserves whatever Claude Code wrote and only cuts records, inserts one new record, and repairs parent pointers.
 
 ### Record shape
 

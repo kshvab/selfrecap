@@ -1,5 +1,5 @@
 /**
- * recap-cycle — HTTP API for Claude Code session continuity.
+ * selfrecap — HTTP API for Claude Code session continuity.
  *
  * Endpoints:
  *   GET  /health           — liveness check
@@ -20,7 +20,7 @@
  *   - Every request must have a loopback Host header and NO Origin header
  *     (browsers always send Origin; CLI/curl clients don't) — kills CSRF.
  *   - Mutating POST routes additionally require an X-Recap-Token header matching
- *     the token at ~/.recap-cycle/token (generated on first start, mode 0600).
+ *     the token at ~/.selfrecap/token (generated on first start, mode 0600).
  *   - 2MB request bodyLimit; per-route Zod caps narrow it further.
  */
 
@@ -64,7 +64,7 @@ function inspectVoice(filePath: string, exposePaths: boolean): VoiceInfo {
 }
 
 /**
- * Ensure a per-machine auth token exists at ~/.recap-cycle/token and return it.
+ * Ensure a per-machine auth token exists at ~/.selfrecap/token and return it.
  * The dir is created 0o700 and the file 0o600 (owner-only) on POSIX so other
  * local users can't read it. NOTE: on Windows/NTFS these POSIX mode bits are a
  * no-op (Node's mode flag doesn't map to ACLs), so the token is not OS-enforced
@@ -72,7 +72,7 @@ function inspectVoice(filePath: string, exposePaths: boolean): VoiceInfo {
  * random bytes hex. The mutating POST routes require it in the X-Recap-Token header.
  */
 function ensureAuthToken(): { token: string; tokenPath: string } {
-  const dir = path.join(os.homedir(), ".recap-cycle");
+  const dir = path.join(os.homedir(), ".selfrecap");
   const tokenPath = path.join(dir, "token");
 
   if (!fs.existsSync(dir)) {
@@ -211,7 +211,7 @@ async function main() {
 
   try {
     await app.listen({ port: config.server.port, host: config.server.host });
-    app.log.info(`recap-cycle listening on http://${config.server.host}:${config.server.port}`);
+    app.log.info(`selfrecap listening on http://${config.server.host}:${config.server.port}`);
     app.log.info(`Configured voices: ${Object.keys(config.voices).join(", ") || "(none)"}`);
   } catch (err) {
     app.log.error(err);

@@ -10,12 +10,12 @@ The single most common confusion with recap surgery is: *"I ran the surgery, the
 
 A running Claude Code session's context is held in **two places**:
 
-1. **The on-disk JSONL transcript** — the file `recap-cycle` reads and rewrites. This is the durable record.
+1. **The on-disk JSONL transcript** — the file `selfrecap` reads and rewrites. This is the durable record.
 2. **The client's in-memory working copy** — what the running session is actually reasoning over right now. The client loads the transcript into memory when the session starts (or resumes) and works from that copy.
 
 There is also a server-side layer (the API's prompt cache), but for the purpose of "why didn't my surgery take effect," the decisive one is the client's in-memory copy.
 
-`recap-cycle` only ever touches layer 1. It cannot reach into a running client's memory. So a surgery performed while a session is live changes the file underneath a client that is still working from its pre-surgery in-memory snapshot. The change is real on disk; the live session simply isn't reading from disk anymore.
+`selfrecap` only ever touches layer 1. It cannot reach into a running client's memory. So a surgery performed while a session is live changes the file underneath a client that is still working from its pre-surgery in-memory snapshot. The change is real on disk; the live session simply isn't reading from disk anymore.
 
 ---
 

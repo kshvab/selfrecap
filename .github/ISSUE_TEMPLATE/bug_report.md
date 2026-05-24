@@ -19,7 +19,7 @@ What you expected to happen instead.
 **Environment**
 - OS:
 - Node version (`node -v`):
-- recap-cycle version / commit:
+- selfrecap version / commit:
 
 **Surgery-related?**
 If this involves `/surgery`: were you in dry-run or `--go`? Do you have the backup file? (Never paste real session content or absolute home paths — redact.)

@@ -1,4 +1,4 @@
-# Contributing to recap-cycle
+# Contributing to selfrecap
 
 Thanks for your interest. This is a small, focused TypeScript server, and contributions that keep it small and focused are the most welcome. Because the tool rewrites files, correctness and tests matter more than feature breadth.
 
@@ -7,8 +7,8 @@ Thanks for your interest. This is a small, focused TypeScript server, and contri
 Requirements: Node.js >= 20.
 
 ```bash
-git clone <repo-url> recap-cycle
-cd recap-cycle
+git clone <repo-url> selfrecap
+cd selfrecap
 npm install
 cp config.example.yaml config.yaml
 # edit config.yaml to point at a real (or fixture) JSONL session

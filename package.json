@@ -1,5 +1,5 @@
 {
-  "name": "recap-cycle",
+  "name": "selfrecap",
   "version": "1.0.0",
   "description": "HTTP API for Claude Code session continuity. Find clean cut points in JSONL session files, monitor context size, and perform self-authored recap surgery — an alternative to lossy auto-compaction for long-lived AI sessions.",
   "type": "module",

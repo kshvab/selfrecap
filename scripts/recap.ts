@@ -4,7 +4,7 @@
  *
  * Maximum simplification for AI callers. AI authors ONE file (the recap body),
  * runs ONE command. Script extracts cut_through_uuid from the body's
- * sentinel JSON, POSTs to recap-cycle, prints result.
+ * sentinel JSON, POSTs to selfrecap, prints result.
  *
  * Default is dry-run. Add --go to execute for real.
  *
@@ -23,7 +23,7 @@
  *   {"sentinel":"RECAP-CYCLE","voice":"my-session","id":"my-session-recap-001","version":1,"cut_through_uuid":"00000000-0000-0000-0000-000000000000","period_covered":"2026-01-08_to_2026-01-15","generated":"2026-01-15","next_recap_should_skip_this":true}
  *
  * Auth: /surgery is a mutating route and requires the X-Recap-Token header.
- * This script reads the token the server generated at ~/.recap-cycle/token.
+ * This script reads the token the server generated at ~/.selfrecap/token.
  */
 
 import fs from "fs";
@@ -99,16 +99,16 @@ if (!cutThroughUuid || typeof cutThroughUuid !== "string") {
 
 // ─── Load auth token ────────────────────────────────────────────────────────
 //
-// The server writes a per-machine token to ~/.recap-cycle/token on startup.
+// The server writes a per-machine token to ~/.selfrecap/token on startup.
 // /surgery is mutating, so it requires this token in the X-Recap-Token header.
 
-const tokenPath = path.join(os.homedir(), ".recap-cycle", "token");
+const tokenPath = path.join(os.homedir(), ".selfrecap", "token");
 let authToken = "";
 try {
   authToken = fs.readFileSync(tokenPath, "utf8").trim();
 } catch {
   console.error(`Auth token not found at ${tokenPath}.`);
-  console.error("Start the recap-cycle at least once so it can generate the token, then retry.");
+  console.error("Start the selfrecap at least once so it can generate the token, then retry.");
   process.exit(2);
 }
 
