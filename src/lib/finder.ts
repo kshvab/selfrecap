@@ -7,7 +7,7 @@
  *   - anchor_offset   — find anchor phrase, then offset N records
  *
  * All methods support `excludeRecap` to skip recap injection messages
- * (identified by the universal MIRROR-RECAP sentinel).
+ * (identified by the configured recap sentinel — see config.sentinel_name).
  */
 
 import {
@@ -41,6 +41,7 @@ function buildMatch(records: JsonlRecord[], idx: number): Match {
 export function findMarkerPhrase(
   filePath: string,
   phrase: string,
+  sentinelName: string,
   excludeRecap = true,
 ): Match[] {
   if (!phrase || phrase.length < 3) return [];
@@ -48,7 +49,7 @@ export function findMarkerPhrase(
   const matches: Match[] = [];
   for (let i = 0; i < records.length; i++) {
     const r = records[i]!;
-    if (excludeRecap && isRecapMessage(r)) continue;
+    if (excludeRecap && isRecapMessage(r, sentinelName)) continue;
     const text = getRecordText(r);
     if (text.includes(phrase)) {
       matches.push(buildMatch(records, i));
@@ -60,6 +61,7 @@ export function findMarkerPhrase(
 export function findTimestampBefore(
   filePath: string,
   beforeIso: string,
+  sentinelName: string,
   excludeRecap = true,
 ): Match[] {
   const cutoff = new Date(beforeIso).getTime();
@@ -69,7 +71,7 @@ export function findTimestampBefore(
   let lastIdx = -1;
   for (let i = 0; i < records.length; i++) {
     const r = records[i]!;
-    if (excludeRecap && isRecapMessage(r)) continue;
+    if (excludeRecap && isRecapMessage(r, sentinelName)) continue;
     if (!r.timestamp) continue;
     const t = new Date(r.timestamp).getTime();
     if (isNaN(t)) continue;
@@ -85,9 +87,10 @@ export function findAnchorOffset(
   anchorPhrase: string,
   offset: number,
   direction: "before" | "after",
+  sentinelName: string,
   excludeRecap = true,
 ): Match[] {
-  const anchors = findMarkerPhrase(filePath, anchorPhrase, excludeRecap);
+  const anchors = findMarkerPhrase(filePath, anchorPhrase, sentinelName, excludeRecap);
   if (anchors.length === 0) return [];
   const records = loadJsonl(filePath);
   const sign = direction === "before" ? -1 : 1;
@@ -140,16 +143,16 @@ export interface FindResult {
   total_lines: number;
 }
 
-export function findCutPoint(filePath: string, spec: FindSpec): FindResult {
+export function findCutPoint(filePath: string, spec: FindSpec, sentinelName: string): FindResult {
   const excludeRecap = spec.exclude_recap !== false;
   let matches: Match[] = [];
 
   switch (spec.method) {
     case "marker_phrase":
-      matches = findMarkerPhrase(filePath, spec.phrase || "", excludeRecap);
+      matches = findMarkerPhrase(filePath, spec.phrase || "", sentinelName, excludeRecap);
       break;
     case "timestamp":
-      matches = findTimestampBefore(filePath, spec.before || "", excludeRecap);
+      matches = findTimestampBefore(filePath, spec.before || "", sentinelName, excludeRecap);
       break;
     case "anchor_offset":
       matches = findAnchorOffset(
@@ -157,6 +160,7 @@ export function findCutPoint(filePath: string, spec: FindSpec): FindResult {
         spec.anchor_phrase || "",
         spec.offset || 0,
         spec.direction || "after",
+        sentinelName,
         excludeRecap,
       );
       break;

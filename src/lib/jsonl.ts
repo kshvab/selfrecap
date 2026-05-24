@@ -101,17 +101,18 @@ export function getRecordText(o: JsonlRecord): string {
 }
 
 /**
- * Detect recap injection messages. All voices' recaps contain the JSON
- * sentinel `"sentinel":"MIRROR-RECAP"` (with or without space after colon)
- * in their content. This is the universal voice-agnostic marker.
+ * Detect recap injection messages. All recaps contain the JSON sentinel
+ * `"sentinel":"<NAME>"` (with or without space after colon) in their content.
+ * The marker name is configurable (config.sentinel_name) and threaded in by
+ * callers so existing recaps authored with a different marker still match.
  *
  * exclude_recap=true callers use this to skip recap messages during search,
  * preventing recap content from polluting cut-point lookups.
  */
-export function isRecapMessage(o: JsonlRecord): boolean {
+export function isRecapMessage(o: JsonlRecord, sentinelName: string): boolean {
   const text = getRecordText(o);
-  return text.includes('"sentinel":"MIRROR-RECAP"') ||
-         text.includes('"sentinel": "MIRROR-RECAP"');
+  return text.includes(`"sentinel":"${sentinelName}"`) ||
+         text.includes(`"sentinel": "${sentinelName}"`);
 }
 
 /**

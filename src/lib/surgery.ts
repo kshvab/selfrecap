@@ -9,8 +9,8 @@
  * SAFETY INVARIANTS (enforced before any file mutation):
  *
  *   1. cut_through_uuid must exist as a record uuid in the file.
- *   2. recap_content must contain the MIRROR-RECAP sentinel JSON.
- *   3. No record in the cut range may contain MIRROR-RECAP sentinel
+ *   2. recap_content must contain the configured recap sentinel JSON.
+ *   3. No record in the cut range may contain the recap sentinel
  *      (would destroy a prior recap) unless force_overwrite_recap=true.
  *   4. Backup must be written before any mutation.
  *   5. Result must pass schema validation (basic shape) — else rollback.
@@ -30,9 +30,17 @@ export interface SurgeryRequest {
   recap_content: string;
   voice?: string;
   backup_dir: string;
+  /** Configured recap sentinel marker name (config.sentinel_name). */
+  sentinel_name: string;
+  /**
+   * When false, filesystem paths (file_path, backup_path) are stripped from the
+   * returned diagnostics so a public/misconfigured clone can't leak the home
+   * directory layout. Defaults to false (safe). See config.expose_paths.
+   */
+  expose_paths?: boolean;
   /** Skip mutation, return diagnostics only. */
   dry_run?: boolean;
-  /** Allow cut range to include records with MIRROR-RECAP sentinel. Default false. */
+  /** Allow cut range to include records with the recap sentinel. Default false. */
   force_overwrite_recap?: boolean;
 }
 
@@ -70,17 +78,15 @@ export interface SurgeryResult {
   };
 }
 
-const SENTINEL_PATTERNS = [
-  '"sentinel":"MIRROR-RECAP"',
-  '"sentinel": "MIRROR-RECAP"',
-];
-
-function hasRecapSentinel(text: string): boolean {
-  return SENTINEL_PATTERNS.some((p) => text.includes(p));
+function hasRecapSentinel(text: string, sentinelName: string): boolean {
+  return (
+    text.includes(`"sentinel":"${sentinelName}"`) ||
+    text.includes(`"sentinel": "${sentinelName}"`)
+  );
 }
 
-function recordHasRecapSentinel(r: JsonlRecord): boolean {
-  return hasRecapSentinel(getRecordText(r));
+function recordHasRecapSentinel(r: JsonlRecord, sentinelName: string): boolean {
+  return hasRecapSentinel(getRecordText(r), sentinelName);
 }
 
 /**
@@ -88,8 +94,13 @@ function recordHasRecapSentinel(r: JsonlRecord): boolean {
  * On failure, ok=false and reason is set; no mutation has occurred.
  */
 export function performSurgery(req: SurgeryRequest): SurgeryResult {
+  const sentinelName = req.sentinel_name;
+  // When expose_paths is false, surface only the basename so diagnostics never
+  // leak the absolute home-directory layout. Internal logic always uses
+  // req.file_path / the real backup path regardless of this flag.
+  const exposePaths = !!req.expose_paths;
   const baseDiag = {
-    file_path: req.file_path,
+    file_path: exposePaths ? req.file_path : path.basename(req.file_path),
     backup_path: null as string | null,
     total_lines_before: 0,
     total_lines_after: null as number | null,
@@ -138,11 +149,11 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
 
   // ─── Validate recap_content contains sentinel ──────────────────────────────
 
-  if (!hasRecapSentinel(req.recap_content)) {
+  if (!hasRecapSentinel(req.recap_content, sentinelName)) {
     return {
       ok: false,
       dry_run: !!req.dry_run,
-      reason: 'recap_content must contain MIRROR-RECAP sentinel JSON. Add a fenced code block: {"sentinel":"MIRROR-RECAP","voice":"<name>","id":"<recap-id>","version":1,...}',
+      reason: `recap_content must contain ${sentinelName} sentinel JSON. Add a fenced code block: {"sentinel":"${sentinelName}","voice":"<name>","id":"<recap-id>","version":1,...}`,
       diagnostics: baseDiag,
     };
   }
@@ -156,7 +167,7 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
   // recap-003 etc. to compound on top of recap-001 instead of destroying it.
 
   let leadingRecapsEnd = 0;
-  while (leadingRecapsEnd < records.length && recordHasRecapSentinel(records[leadingRecapsEnd]!)) {
+  while (leadingRecapsEnd < records.length && recordHasRecapSentinel(records[leadingRecapsEnd]!, sentinelName)) {
     leadingRecapsEnd++;
   }
   baseDiag.leading_recaps_preserved = leadingRecapsEnd;
@@ -177,7 +188,7 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
   let nonLeadingRecapInRange = false;
   for (let i = leadingRecapsEnd; i <= cutIdx; i++) {
     const r = records[i];
-    if (r && recordHasRecapSentinel(r)) {
+    if (r && recordHasRecapSentinel(r, sentinelName)) {
       nonLeadingRecapInRange = true;
       break;
     }
@@ -324,7 +335,7 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
       diagnostics: baseDiag,
     };
   }
-  baseDiag.backup_path = backupPath;
+  baseDiag.backup_path = exposePaths ? backupPath : path.basename(backupPath);
 
   // Atomic write: write to temp, then rename
   const tempPath = req.file_path + ".tmp";

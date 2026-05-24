@@ -4,7 +4,7 @@
  *
  * Maximum simplification for AI callers. AI authors ONE file (the recap body),
  * runs ONE command. Script extracts cut_through_uuid from the body's
- * MIRROR-RECAP sentinel JSON, POSTs to recap-server, prints result.
+ * sentinel JSON, POSTs to recap-server, prints result.
  *
  * Default is dry-run. Add --go to execute for real.
  *
@@ -16,14 +16,19 @@
  *
  * Body file requirements:
  *   - Plain text, native newlines, no escaping
- *   - Must contain a MIRROR-RECAP sentinel JSON block somewhere
+ *   - Must contain a recap sentinel JSON block somewhere
  *   - Sentinel JSON must include `cut_through_uuid` field
  *
  * Example sentinel block to embed in body:
- *   {"sentinel":"MIRROR-RECAP","voice":"iris","id":"iris-recap-001","version":1,"cut_through_uuid":"7c457db9-c8f0-4d1e-a603-1813cda6c183","period_covered":"2026-04-20_to_2026-04-26","generated":"2026-05-08","next_recap_should_skip_this":true}
+ *   {"sentinel":"RECAP-CYCLE","voice":"iris","id":"iris-recap-001","version":1,"cut_through_uuid":"7c457db9-c8f0-4d1e-a603-1813cda6c183","period_covered":"2026-04-20_to_2026-04-26","generated":"2026-05-08","next_recap_should_skip_this":true}
+ *
+ * Auth: /surgery is a mutating route and requires the X-Recap-Token header.
+ * This script reads the token the server generated at ~/.recap-server/token.
  */
 
 import fs from "fs";
+import os from "os";
+import path from "path";
 
 const args = process.argv.slice(2);
 const voice = args[0];
@@ -37,7 +42,7 @@ if (!voice || !bodyPath || args.includes("--help") || args.includes("-h")) {
   console.error("  --force           Allow cut over prior recap (force_overwrite_recap)");
   console.error("  --server <url>    Override server URL (default http://127.0.0.1:9090)");
   console.error("");
-  console.error("Body file must contain a MIRROR-RECAP sentinel JSON block with");
+  console.error("Body file must contain a recap sentinel JSON block with");
   console.error("`cut_through_uuid` field. Script extracts it automatically.");
   process.exit(1);
 }
@@ -56,17 +61,21 @@ const serverBase = serverIdx >= 0 && args[serverIdx + 1]
 
 const body = fs.readFileSync(bodyPath, "utf8");
 
-// ─── Extract MIRROR-RECAP sentinel JSON from body ──────────────────────────
+// ─── Extract sentinel JSON from body ───────────────────────────────────────
+//
+// The sentinel name is server-configurable (config.sentinel_name), so match any
+// non-empty value here. The server validates that the body's sentinel matches
+// its configured name; this script only needs to pull out cut_through_uuid.
 
-const sentinelRegex = /\{[^{}]*"sentinel"\s*:\s*"MIRROR-RECAP"[^{}]*\}/;
+const sentinelRegex = /\{[^{}]*"sentinel"\s*:\s*"[^"]+"[^{}]*\}/;
 const sentinelMatch = body.match(sentinelRegex);
 
 if (!sentinelMatch) {
   console.error("─── Body validation failed ───");
-  console.error("Body file does not contain a MIRROR-RECAP sentinel JSON block.");
+  console.error("Body file does not contain a recap sentinel JSON block.");
   console.error("");
   console.error("Add a sentinel block somewhere in the body, like this:");
-  console.error('{"sentinel":"MIRROR-RECAP","voice":"<your-voice>","id":"<recap-id>","version":1,"cut_through_uuid":"<uuid>"}');
+  console.error('{"sentinel":"RECAP-CYCLE","voice":"<your-voice>","id":"<recap-id>","version":1,"cut_through_uuid":"<uuid>"}');
   console.error("");
   console.error("Server requires this for protection of recap from future trim cycles.");
   process.exit(1);
@@ -86,6 +95,21 @@ if (!cutThroughUuid || typeof cutThroughUuid !== "string") {
   console.error("Sentinel JSON missing `cut_through_uuid` field.");
   console.error("Add it to the sentinel block — it's the surgery handoff key.");
   process.exit(1);
+}
+
+// ─── Load auth token ────────────────────────────────────────────────────────
+//
+// The server writes a per-machine token to ~/.recap-server/token on startup.
+// /surgery is mutating, so it requires this token in the X-Recap-Token header.
+
+const tokenPath = path.join(os.homedir(), ".recap-server", "token");
+let authToken = "";
+try {
+  authToken = fs.readFileSync(tokenPath, "utf8").trim();
+} catch {
+  console.error(`Auth token not found at ${tokenPath}.`);
+  console.error("Start the recap-server at least once so it can generate the token, then retry.");
+  process.exit(2);
 }
 
 // ─── Build payload + POST ──────────────────────────────────────────────────
@@ -112,7 +136,10 @@ let response: Response;
 try {
   response = await fetch(`${serverBase}/surgery`, {
     method: "POST",
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Recap-Token": authToken,
+    },
     body: JSON.stringify(payload),
   });
 } catch (e: any) {

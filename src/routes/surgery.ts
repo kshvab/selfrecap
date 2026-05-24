@@ -6,7 +6,7 @@
  * AI provides:
  *   - voice OR file_path
  *   - cut_through_uuid (from /find-cut-point)
- *   - recap_content (the user-facing message body, must contain MIRROR-RECAP sentinel)
+ *   - recap_content (the user-facing message body, must contain the configured sentinel)
  *   - dry_run (boolean) — recommended on first call
  *
  * Server enforces safety invariants before any mutation. See lib/surgery.ts.
@@ -23,7 +23,9 @@ const RequestSchema = z
     voice: z.string().optional(),
     file_path: z.string().optional(),
     cut_through_uuid: z.string().min(8),
-    recap_content: z.string().min(50),
+    // Cap recap body at 1MB so an oversized payload is rejected with a clean 400
+    // before any file work. (Fastify's bodyLimit guards the whole request too.)
+    recap_content: z.string().min(50).max(1_048_576),
     dry_run: z.boolean().optional(),
     force_overwrite_recap: z.boolean().optional(),
   })
@@ -55,6 +57,8 @@ export function registerSurgery(app: FastifyInstance, config: AppConfig) {
       recap_content: body.recap_content,
       voice: resolved.voice,
       backup_dir: config.backup_dir,
+      sentinel_name: config.sentinel_name,
+      expose_paths: config.expose_paths,
       dry_run: body.dry_run,
       force_overwrite_recap: body.force_overwrite_recap,
     });

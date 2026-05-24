@@ -61,8 +61,11 @@ export function registerFindCutPoint(app: FastifyInstance, config: AppConfig) {
         exclude_recap: body.exclude_recap,
         limit: body.limit,
         before_timestamp: body.before_timestamp,
-      });
-      return reply.send({ ...result, voice: resolved.voice });
+      }, config.sentinel_name);
+      // Strip the absolute file path from the response unless expose_paths is on.
+      const { file, ...rest } = result;
+      const payload = config.expose_paths ? result : rest;
+      return reply.send({ ...payload, voice: resolved.voice });
     } catch (e: any) {
       return reply.status(500).send({ error: "find_failed", message: e.message });
     }

@@ -23,9 +23,11 @@ export function registerContext(app: FastifyInstance, config: AppConfig) {
     }
     const reading = readContextSize(resolved.path, voice);
     if (!reading) {
-      return reply.status(404).send({ error: "file_not_found", path: resolved.path });
+      return reply.status(404).send({ error: "file_not_found" });
     }
-    return reply.send(reading);
+    // Strip the absolute file path from the response unless expose_paths is on.
+    const { file, ...rest } = reading;
+    return reply.send(config.expose_paths ? reading : rest);
   });
 
   app.get<{ Querystring: { path?: string } }>("/context", async (request, reply) => {
@@ -33,10 +35,19 @@ export function registerContext(app: FastifyInstance, config: AppConfig) {
     if (!filePath) {
       return reply.status(400).send({ error: "missing_path", message: "Pass ?path=<absolute-jsonl-path> or use /context/:voice" });
     }
-    const reading = readContextSize(filePath);
-    if (!reading) {
-      return reply.status(404).send({ error: "file_not_found", path: filePath });
+    // Validate the caller-supplied path against allowed_roots (same guard as
+    // every other route) so an arbitrary path can't be read off disk.
+    let resolved: { path: string; voice?: string };
+    try {
+      resolved = resolvePath(config, undefined, filePath);
+    } catch (e: any) {
+      return reply.status(400).send({ error: "path_resolution_failed", message: e.message });
     }
-    return reply.send(reading);
+    const reading = readContextSize(resolved.path);
+    if (!reading) {
+      return reply.status(404).send({ error: "file_not_found" });
+    }
+    const { file, ...rest } = reading;
+    return reply.send(config.expose_paths ? reading : rest);
   });
 }
