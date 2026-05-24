@@ -247,7 +247,7 @@ This is the **injection-seam constraint**. The wrapper isn't ceremonial — it's
 
 With the wrapper resolved, mode choice is about the narrative voice INSIDE the wrapper:
 
-- **Mode A — first-person handed back by the operator.** The wrapper opens in the operator's voice and hands the narrative back to you; the content then reads as your own diary entry ("...I built the heartbeat loop. I shipped the trim tool..."). Native for build-flavored and content-flavored work.
+- **Mode A — first-person handed back by the operator.** The wrapper opens in the operator's voice and hands the narrative back to you; the content then reads as your own diary entry ("...I built the auth layer. I shipped the search redesign..."). Native for build-flavored and content-flavored work.
 - **Mode B — second-person briefing.** The operator narrates your actions back to you in second-person throughout ("You decided X. You wrote Y. You shipped Z."). Briefing-shape; grounds the handoff as a trusted brief rather than a memory you must recover. Native for strategic work.
 - **Hybrid B+A.** Mode B for decisions / narrative / handoff sections (operator narrating). Mode A for an identity-texture section where only you can speak about your own accumulated work in first-person ("This is what I am: ..."). The wrapper is still required at the top. Native for multi-register.
 

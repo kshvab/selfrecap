@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-01-08
+## [1.0.0] - 2026-05-25
 
 First public release. An HTTP API for Claude Code session continuity: find clean
 cut points in JSONL transcripts, monitor context-window size, and perform
@@ -48,4 +48,4 @@ self-authored recap surgery as an alternative to lossy auto-compaction.
   `docs/` set (`protocol.md`, `walkthrough.md`, `recap-writing-guide.md`,
   `cache-mechanics.md`).
 
-[1.0.0]: https://github.com/OWNER/selfrecap/releases/tag/v1.0.0
+[1.0.0]: https://github.com/kshvab/selfrecap/releases/tag/v1.0.0
