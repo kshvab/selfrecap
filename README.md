@@ -329,6 +329,18 @@ A complete worked example with generic placeholders is in [docs/walkthrough.md](
 
 ---
 
+## The /remember skill
+
+[`skills/remember/SKILL.md`](./skills/remember/SKILL.md) is a Claude Code skill that lets a long-lived session run the recap cycle on *itself*, autonomously: read its own context size, find a clean cut point, author the recap body in its own voice, dry-run, execute, and report the restart commands back to the operator. It drives the same end-to-end flow as [docs/walkthrough.md](./docs/walkthrough.md), but the session does the work instead of you doing it by hand. Install it by copying the skill folder into your Claude Code skills directory:
+
+```bash
+cp -r skills/remember ~/.claude/skills/
+```
+
+Then the session can run `/remember` when it nears the context wall. (It is named `/remember` because `/recap` is a reserved native Claude Code command.)
+
+---
+
 ## Roadmap
 
 **Shipped (v1.0.0):**
@@ -337,11 +349,11 @@ A complete worked example with generic placeholders is in [docs/walkthrough.md](
 - Multi-recap layering (recap-002 compounds on recap-001 instead of destroying it)
 - Atomic backed-up writes, dry-run mode, configurable sentinel name
 - Security hardening (allowed_roots, expose_paths, loopback binding)
+- The `/remember` Claude Code skill (sessions invoke the recap cycle on themselves)
 - pm2 deploy path, test suite
 
 **Future:**
 
-- A Claude Code skill file so sessions can invoke the recap cycle autonomously
 - `npm publish` and a Docker image
 - A `/trim` endpoint (file-level noise removal — a separate concern from recap)
 - Watchdog automation (threshold-triggered self-recap proposals)

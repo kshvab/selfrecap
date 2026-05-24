@@ -9,5 +9,5 @@ backups/
 .idea/
 .vscode/
 .claude/
-~/.recap-server/
+~/.recap-cycle/
 coverage/
