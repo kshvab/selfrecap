@@ -10,7 +10,26 @@
 
 Long-lived Claude Code sessions eventually fill the context window. The built-in `/compact` solves this by replacing your transcript with a machine summary written in a generic voice. For a quick utility session that is fine. For a session you have invested days of context into — accumulated decisions, conventions, working relationships, a recognizable way of thinking — auto-compaction is lossy in a way that is hard to recover from. The thread comes back subtly not-itself: someone else's summary of who it was.
 
-`selfrecap` implements a different shape. Instead of letting an external summarizer overwrite the past, the session **writes its own recap of its oldest stretch, in its own voice**. The tool then performs surgery on the transcript file on disk: it hard-cuts the old verbatim records, injects the self-authored recap as a single message at the top, and repairs the parent-pointer chain so the conversation flows cleanly from recap to the surviving records. After a restart, the session resumes reading its own summary of its own history. Recognition instead of replacement.
+`selfrecap` implements a different shape. Instead of letting an external summarizer overwrite the past, the session **writes its own recap of its oldest stretch, in its own voice**. The tool then performs surgery on the transcript file on disk: it hard-cuts the oldest verbatim records, injects the self-authored recap as a single message at the **front of the transcript** — the oldest position, replacing the cut stretch while the recent records are kept verbatim after it — and repairs the parent-pointer chain so the conversation flows cleanly from recap to the surviving records. After a restart, the session resumes reading its own summary of its own history. Recognition instead of replacement.
+
+### How the cut works
+
+A Claude Code transcript is a list of records (JSONL lines), oldest at the top. Surgery replaces the **oldest** stretch with your recap and leaves everything recent **untouched** — never the other way around:
+
+```text
+  BEFORE  (2051 lines)            AFTER  (1019 lines)
+  +-------------------+           +-------------------+
+  | 0     } cut       |           | RECAP  <- the     |
+  | ...   } these     |   ---->   | summary you wrote |
+  | 1032  } (oldest)  |           +-------------------+
+  +-------------------+           | 1033 } kept       |
+  | 1033 } keep these |           | ...  } verbatim   |
+  | ...  } verbatim   |           | 2050 } (newest)   |
+  | 2050 } (newest)   |           +-------------------+
+  +-------------------+
+```
+
+Lines `0`–`1032` (the oldest stretch, through your chosen `cut_through_uuid`) collapse into the single recap you wrote. Lines `1033`–`2050` (the recent work) are carried over verbatim. The recap takes the slot the oldest records held, and the first survivor's `parentUuid` is re-pointed to the recap, so the chain reads `recap → 1033 → … → newest` with no gap. If prior recaps already sit at the front, the new one is inserted just after them rather than overwriting them (see [multi-recap layering](./docs/protocol.md#multi-recap-layering)).
 
 This is a real file-mutation tool. It rewrites the JSONL transcript that Claude Code reads on resume. It always writes a timestamped backup first, supports a dry-run mode that changes nothing, and enforces safety invariants (the cut target must exist, the recap must carry a sentinel marker, prior recaps are preserved) before touching a byte. Read [SECURITY.md](./SECURITY.md) before you point it anywhere but your own machine.
 
@@ -18,11 +37,11 @@ This is a real file-mutation tool. It rewrites the JSONL transcript that Claude 
 
 Three situations where recap surgery earns its keep over `/compact`:
 
-- **Long autonomous runs that must not die mid-process.** An orchestrator session driving a long multi-stage job, or any agent on a many-hour autonomous run, will eventually approach the context wall. Hitting it mid-work is the bad outcome — the run stalls with the work half-done. selfrecap lets the session shed the context of *completed* phases and keep going on the same thread, so a long job survives to completion instead of dying at the ceiling. This is the case that doesn't depend on feel: the six-hour run finishes instead of stalling.
-- **Long decision-context.** A session carrying days of accumulated decisions, conventions, and reasoning — where *why* things are the way they are lives in the conversation, not just the code. Auto-compaction flattens that reasoning into a generic summary; a self-authored recap keeps it in the session's own terms.
+- **Long autonomous runs that must not die mid-process.** An orchestrator session driving a long multi-stage job, or any agent on a many-hour autonomous run, will eventually approach the context wall. Hitting it mid-work is the bad outcome — the run stalls with the work half-done. selfrecap lets the session shed the context of _completed_ phases and keep going on the same thread, so a long job survives to completion instead of dying at the ceiling. This is the case that doesn't depend on feel: the six-hour run finishes instead of stalling.
+- **Long decision-context.** A session carrying days of accumulated decisions, conventions, and reasoning — where _why_ things are the way they are lives in the conversation, not just the code. Auto-compaction flattens that reasoning into a generic summary; a self-authored recap keeps it in the session's own terms.
 - **Identity continuity across sessions.** For long-lived personas where the session is a recognizable working partner, recognition-instead-of-replacement is the whole point.
 
-**Why a restart (`--resume`), not a fresh session.** The payoff depends on resuming the *same* session id after surgery. Same id + rewritten transcript means the session comes back **as itself** with a freed context budget — continuing, not restarting. Starting a new session instead would throw away the live continuity that is the entire reason to do this. The surgery rewrites the file; `claude --resume <session-id>` is what loads the rewritten file into the same continuing session. (See [docs/cache-mechanics.md](./docs/cache-mechanics.md) for why a live reload isn't possible and a restart is required.)
+**Why a restart (`--resume`), not a fresh session.** The payoff depends on resuming the _same_ session id after surgery. Same id + rewritten transcript means the session comes back **as itself** with a freed context budget — continuing, not restarting. Starting a new session instead would throw away the live continuity that is the entire reason to do this. The surgery rewrites the file; `claude --resume <session-id>` is what loads the rewritten file into the same continuing session. (See [docs/cache-mechanics.md](./docs/cache-mechanics.md) for why a live reload isn't possible and a restart is required.)
 
 ### A note on "voice"
 
@@ -355,7 +374,7 @@ A complete worked example with generic placeholders is in [docs/walkthrough.md](
 
 ## The /remember skill
 
-[`skills/remember/SKILL.md`](./skills/remember/SKILL.md) is a Claude Code skill that lets a long-lived session run the recap cycle on *itself*, autonomously: read its own context size, find a clean cut point, author the recap body in its own voice, dry-run, execute, and report the restart commands back to the operator. It drives the same end-to-end flow as [docs/walkthrough.md](./docs/walkthrough.md), but the session does the work instead of you doing it by hand. Install it by copying the skill folder into your Claude Code skills directory:
+[`skills/remember/SKILL.md`](./skills/remember/SKILL.md) is a Claude Code skill that lets a long-lived session run the recap cycle on _itself_, autonomously: read its own context size, find a clean cut point, author the recap body in its own voice, dry-run, execute, and report the restart commands back to the operator. It drives the same end-to-end flow as [docs/walkthrough.md](./docs/walkthrough.md), but the session does the work instead of you doing it by hand. Install it by copying the skill folder into your Claude Code skills directory:
 
 ```bash
 cp -r skills/remember ~/.claude/skills/

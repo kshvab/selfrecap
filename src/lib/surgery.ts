@@ -23,7 +23,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { randomUUID } from "crypto";
-import { loadJsonl, getRecordText, type JsonlRecord } from "./jsonl.js";
+import { loadJsonlWithRaw, getRecordText, type JsonlRecord } from "./jsonl.js";
 
 // ─── Per-path in-process mutex ────────────────────────────────────────────────
 //
@@ -190,6 +190,35 @@ type PairBalance = {
 };
 
 /**
+ * Count lines that FAILED to parse — i.e. the parsed record is an empty `{}`
+ * while the raw source line is non-trivial (not blank, not literally "{}").
+ * loadJsonl turns any unparseable line into `{}`, which would silently destroy
+ * that record's content if it were re-serialized. We track this count before
+ * and after the write so the post-write validation can assert the surgery did
+ * not turn a real line into `{}`.
+ */
+function countUnparseable(records: JsonlRecord[], rawLines: string[]): number {
+  let n = 0;
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    const raw = rawLines[i];
+    if (rec !== undefined && raw !== undefined && isUnparseable(rec, raw)) n++;
+  }
+  return n;
+}
+
+/**
+ * A record/raw pair is "unparseable" when the parse produced an empty object
+ * but the original line carried real content (non-blank and not literally "{}").
+ */
+function isUnparseable(rec: JsonlRecord, raw: string): boolean {
+  const trimmed = raw.trim();
+  return (
+    Object.keys(rec).length === 0 && trimmed.length > 0 && trimmed !== "{}"
+  );
+}
+
+/**
  * Compute tool_use/tool_result pairing over a record array, plus the self-loop
  * tail-orphan signature. Shared between the in-memory plan and the post-write
  * re-validation so both measure pairing the exact same way.
@@ -298,8 +327,17 @@ async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
 
   // ─── Load + locate cut point ───────────────────────────────────────────────
 
-  const records = loadJsonl(req.file_path);
+  // Load parsed records AND raw line strings in a single read so they stay
+  // index-aligned. ALL the analysis below runs on the parsed `records` (that's
+  // fine); only the bytes we eventually WRITE come from `rawLines`, so survivors
+  // are preserved verbatim instead of re-serialized from a possibly-empty parse.
+  const { records, rawLines } = loadJsonlWithRaw(req.file_path);
   baseDiag.total_lines_before = records.length;
+
+  // How many lines in the ORIGINAL file failed to parse (became `{}` while the
+  // source line was non-trivial). Used by the post-write check to prove the
+  // surgery did not introduce a new `{}` (the silent data-loss scenario).
+  const unparseableBefore = countUnparseable(records, rawLines);
 
   let cutIdx = -1;
   for (let i = 0; i < records.length; i++) {
@@ -433,6 +471,19 @@ async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
   const preservedRecaps = records.slice(0, leadingRecapsEnd);
   const survivors = records.slice(cutIdx + 1);
   if (survivors.length > 0 && survivors[0]) {
+    // The first survivor's parentUuid must be repointed to the new recap. If its
+    // ORIGINAL line was unparseable (parsed to `{}` over a non-trivial source
+    // line), we cannot safely repair its chain — and re-serializing it would
+    // write `{}` and lose its content. Fail loud rather than corrupt. Checked
+    // here, BEFORE the repoint mutates the `{}` object (which would mask it).
+    if (isUnparseable(records[cutIdx + 1]!, rawLines[cutIdx + 1]!)) {
+      return {
+        ok: false,
+        dry_run: !!req.dry_run,
+        reason: `first_survivor_unparseable: the first surviving record (line ${cutIdx + 1}) does not parse as JSON, so its parentUuid cannot be safely repointed to the new recap. Refusing rather than corrupting it. No mutation performed.`,
+        diagnostics: baseDiag,
+      };
+    }
     survivors[0].parentUuid = newUuid;
   }
   const finalRecords = [...preservedRecaps, newRecord, ...survivors];
@@ -443,9 +494,42 @@ async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
   const plannedBalance = computePairBalance(finalRecords);
   baseDiag.pair_balance = plannedBalance;
 
-  // ─── Estimate post-mutation file size ──────────────────────────────────────
+  // ─── Build the file content from RAW lines (not re-serialized parses) ───────
+  //
+  // WHY raw: re-serializing every survivor from its parsed form is data-loss.
+  // An unparseable survivor line parses to `{}` (loadJsonl's failure value), so
+  // re-stringifying it would write back `{}` and destroy that record's content
+  // silently. Even valid lines can drift (key order / unicode escaping). A
+  // surgery only legitimately changes three things, so we serialize ONLY those
+  // and copy every other survivor back byte-for-byte from rawLines:
+  //   (a) preserved leading recaps  -> verbatim raw
+  //   (b) the ONE new recap record  -> JSON.stringify (genuinely new)
+  //   (c) the FIRST survivor        -> JSON.stringify (its parentUuid was repointed)
+  //   (d) all remaining survivors   -> verbatim raw
+  const segments: string[] = [];
 
-  const finalContent = finalRecords.map((r) => JSON.stringify(r)).join("\n") + "\n";
+  // (a) Preserved leading recaps (indices 0 .. leadingRecapsEnd-1): raw verbatim.
+  for (let i = 0; i < leadingRecapsEnd; i++) {
+    segments.push(rawLines[i]!);
+  }
+
+  // (b) The new recap record is genuinely new — serialize it.
+  segments.push(JSON.stringify(newRecord));
+
+  if (survivors.length > 0) {
+    // (c) First survivor (original index cutIdx+1) had its parentUuid repointed
+    // to the new recap, so it must be re-serialized. It is guaranteed parseable
+    // here — the first_survivor_unparseable guard above already bailed out for
+    // the `{}`-over-real-content case (we never reach this point for it).
+    segments.push(JSON.stringify(survivors[0]));
+
+    // (d) Remaining survivors (indices cutIdx+2 .. end): raw verbatim.
+    for (let i = cutIdx + 2; i < records.length; i++) {
+      segments.push(rawLines[i]!);
+    }
+  }
+
+  const finalContent = segments.join("\n") + "\n";
   baseDiag.file_size_after_bytes = Buffer.byteLength(finalContent);
 
   if (req.dry_run) {
@@ -531,7 +615,7 @@ async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
   // corrupted a record), restore from backup and fail. This catches disk-level
   // corruption that the in-memory check can't see.
   try {
-    const onDisk = loadJsonl(req.file_path);
+    const { records: onDisk, rawLines: onDiskRaw } = loadJsonlWithRaw(req.file_path);
     const diskBalance = computePairBalance(onDisk);
     const lineMismatch = onDisk.length !== finalRecords.length;
     const orphanMismatch = diskBalance.orphans !== plannedBalance.orphans;
@@ -543,6 +627,21 @@ async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
         dry_run: false,
         reason: `post_write_validation_failed: on-disk content diverged from the validated plan (` +
           `lines ${finalRecords.length} -> ${onDisk.length}, orphans ${plannedBalance.orphans} -> ${diskBalance.orphans}). ` +
+          `File restored from backup.`,
+        diagnostics: baseDiag,
+      };
+    }
+    // Targeted backstop for the data-loss scenario: the count of unparseable
+    // (`{}`-over-real-content) lines must NOT increase versus the original. If
+    // it did, a survivor line that used to carry content was destroyed.
+    const unparseableAfter = countUnparseable(onDisk, onDiskRaw);
+    if (unparseableAfter > unparseableBefore) {
+      try { fs.copyFileSync(backupPath, req.file_path); } catch {}
+      return {
+        ok: false,
+        dry_run: false,
+        reason: `post_write_unparseable_increase: the number of unparseable lines rose ` +
+          `(${unparseableBefore} -> ${unparseableAfter}) — a survivor record was corrupted. ` +
           `File restored from backup.`,
         diagnostics: baseDiag,
       };

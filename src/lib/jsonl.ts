@@ -61,6 +61,33 @@ export function loadJsonlLines(filePath: string): string[] {
 }
 
 /**
+ * Load a JSONL file ONCE and return both the parsed records AND the original
+ * raw line strings, index-aligned (rawLines[i] is the source text of
+ * records[i]). Parsing uses the same `{}`-on-failure behavior as loadJsonl
+ * (fine for analysis), but the raw lines let callers write survivor records
+ * back byte-for-byte instead of re-serializing a possibly-empty `{}` parse.
+ *
+ * Single read of the file is what guarantees the two arrays stay aligned —
+ * do NOT reconstruct this by calling loadJsonl + loadJsonlLines separately.
+ */
+export function loadJsonlWithRaw(filePath: string): {
+  records: JsonlRecord[];
+  rawLines: string[];
+} {
+  const raw = fs.readFileSync(filePath, "utf8").trim();
+  if (!raw) return { records: [], rawLines: [] };
+  const rawLines = raw.split("\n");
+  const records = rawLines.map((line) => {
+    try {
+      return JSON.parse(line) as JsonlRecord;
+    } catch {
+      return {} as JsonlRecord;
+    }
+  });
+  return { records, rawLines };
+}
+
+/**
  * Extract ALL searchable text from a record. No truncation.
  * Traverses: message.content (string OR array), tool_use.input (full JSON),
  * tool_result.content (string OR array of blocks), thinking blocks, system content.
