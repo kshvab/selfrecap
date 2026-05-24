@@ -35,7 +35,7 @@ A **voice** is a configurable short name for one of your Claude Code sessions (f
 Requirements: Node.js >= 20.
 
 ```bash
-git clone <repo-url> selfrecap
+git clone https://github.com/kshvab/selfrecap.git selfrecap
 cd selfrecap
 npm install
 cp config.example.yaml config.yaml

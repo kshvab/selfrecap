@@ -7,7 +7,7 @@ Thanks for your interest. This is a small, focused TypeScript server, and contri
 Requirements: Node.js >= 20.
 
 ```bash
-git clone <repo-url> selfrecap
+git clone https://github.com/kshvab/selfrecap.git selfrecap
 cd selfrecap
 npm install
 cp config.example.yaml config.yaml
