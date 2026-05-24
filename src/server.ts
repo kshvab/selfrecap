@@ -1,12 +1,14 @@
 /**
  * recap-cycle — HTTP API for Claude Code session continuity.
  *
- * Phase 1 endpoints:
- *   POST /find-cut-point   — locate a record in JSONL by AI-supplied spec
- *   GET  /context/:voice   — read current context size for a registered voice
- *   GET  /context?path=... — read current context size for any JSONL path
+ * Endpoints:
  *   GET  /health           — liveness check
  *   GET  /voices           — list configured voices
+ *   GET  /context/:voice   — read current context size for a registered voice
+ *   GET  /context?path=... — read current context size for any JSONL path
+ *   GET  /contexts         — aggregated context sizes for all voices
+ *   POST /find-cut-point   — locate a record in JSONL by AI-supplied spec
+ *   POST /surgery          — cut + inject recap + repair chain (dry-run by default)
  *
  * Run:
  *   npx tsx src/server.ts
@@ -63,9 +65,11 @@ function inspectVoice(filePath: string, exposePaths: boolean): VoiceInfo {
 
 /**
  * Ensure a per-machine auth token exists at ~/.recap-cycle/token and return it.
- * The dir is created 0o700 and the file 0o600 (owner-only) so other local users
- * can't read it. Token is 32 random bytes hex. The mutating POST routes require
- * this token in the X-Recap-Token header.
+ * The dir is created 0o700 and the file 0o600 (owner-only) on POSIX so other
+ * local users can't read it. NOTE: on Windows/NTFS these POSIX mode bits are a
+ * no-op (Node's mode flag doesn't map to ACLs), so the token is not OS-enforced
+ * owner-only there — acceptable for a single-user loopback box. Token is 32
+ * random bytes hex. The mutating POST routes require it in the X-Recap-Token header.
  */
 function ensureAuthToken(): { token: string; tokenPath: string } {
   const dir = path.join(os.homedir(), ".recap-cycle");
@@ -182,7 +186,7 @@ export function buildApp(config: AppConfig, opts: { logger?: boolean } = {}): Bu
 
   app.get("/health", async () => ({
     status: "ok",
-    version: "0.2.0",
+    version: "1.0.0",
     voices_registered: Object.keys(config.voices).length,
     voices_missing_file: missing.length,
   }));

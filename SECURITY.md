@@ -39,7 +39,7 @@ This blocks both traversal payloads (`../../etc/passwd`) and symlink escapes (a 
 
 The hardening layer for POST routes is:
 
-- **Auth token.** A token is generated on first start and written with `0600` permissions to `~/.recap-cycle/token`. POST requests must present it (for example via an `X-Recap-Token` header). Requests without a valid token are rejected with `401`.
+- **Auth token.** A token is generated on first start and written to `~/.recap-cycle/token`. POST requests must present it (for example via an `X-Recap-Token` header). Requests without a valid token are rejected with `401`. On POSIX systems the file is written `0600` and its directory `0700` (owner-only). **On Windows/NTFS those POSIX mode bits are effectively a no-op** — Node's `mode` flag does not map to NTFS ACLs — so the token file is not OS-enforced owner-only on Windows. This is acceptable for a single-user loopback machine (the threat the token addresses is CSRF + other local processes on a shared box); if you are on a shared Windows machine, restrict the file's ACL yourself.
 - **Origin rejection.** Any request carrying an `Origin` header is rejected with `403`. A legitimate local CLI client does not set `Origin`; a browser-driven CSRF attempt does. This closes the cross-site path even before the token check.
 - **Host verification.** The `Host` header is verified to be a loopback host, defending against DNS-rebinding.
 
