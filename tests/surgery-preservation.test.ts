@@ -190,4 +190,38 @@ describe("surgery byte-preservation (survivors)", () => {
       expect(out[i]?.parentUuid).toBe(out[i - 1]?.uuid);
     }
   });
+
+  it("CRLF input produces a consistent CRLF file — no mixed \\r\\n / \\n endings", async () => {
+    // Before the eol-detection fix, verbatim survivors kept their \r\n while the
+    // re-serialized recap + first survivor were joined with bare \n, producing a
+    // mixed-ending file. Real CC transcripts are LF-only, but a stranger's editor
+    // or git autocrlf could hand the tool a CRLF transcript; the output must stay
+    // single-ending either way.
+    const lines = [
+      recordLine({ uuid: "u00", parentUuid: null, type: "user", content: "first message" }),
+      recordLine({ uuid: "u01", parentUuid: "u00", type: "assistant", content: "reply" }),
+      recordLine({ uuid: "u02", parentUuid: "u01", type: "user", content: "cut here" }),
+      recordLine({ uuid: "u03", parentUuid: "u02", type: "assistant", content: "first survivor" }),
+      recordLine({ uuid: "u04", parentUuid: "u03", type: "user", content: "second survivor" }),
+    ];
+    const w = newWorkspace(lines.join("\r\n") + "\r\n");
+
+    const res = await performSurgery({
+      file_path: w.filePath,
+      cut_through_uuid: "u02",
+      recap_content: RECAP_BODY,
+      backup_dir: w.backupDir,
+      sentinel_name: SENTINEL,
+    });
+    expect(res.ok).toBe(true);
+
+    const out = fs.readFileSync(w.filePath, "utf8");
+    const totalLF = (out.match(/\n/g) || []).length;
+    const crlf = (out.match(/\r\n/g) || []).length;
+    // Every newline is part of a \r\n pair — no bare \n, no mix.
+    expect(crlf).toBeGreaterThan(0);
+    expect(crlf).toBe(totalLF);
+    // Records still parse and the chain is intact.
+    expect(loadJsonl(w.filePath).length).toBe(res.diagnostics.total_lines_after);
+  });
 });

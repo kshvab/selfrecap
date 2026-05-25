@@ -73,10 +73,18 @@ export function loadJsonlLines(filePath: string): string[] {
 export function loadJsonlWithRaw(filePath: string): {
   records: JsonlRecord[];
   rawLines: string[];
+  eol: string;
 } {
   const raw = fs.readFileSync(filePath, "utf8").trim();
-  if (!raw) return { records: [], rawLines: [] };
-  const rawLines = raw.split("\n");
+  if (!raw) return { records: [], rawLines: [], eol: "\n" };
+  // Detect the file's dominant line ending so the surgery write path can join
+  // verbatim survivors and re-serialized lines (new recap, repointed first
+  // survivor) with ONE consistent ending — never a \r\n / \n mix. We split on
+  // /\r?\n/ so rawLines never carry a trailing \r (the terminator isn't content).
+  // Real CC transcripts are LF-only; this guards a CRLF file that a stranger's
+  // editor or git autocrlf could produce.
+  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+  const rawLines = raw.split(/\r?\n/);
   const records = rawLines.map((line) => {
     try {
       return JSON.parse(line) as JsonlRecord;
@@ -84,7 +92,7 @@ export function loadJsonlWithRaw(filePath: string): {
       return {} as JsonlRecord;
     }
   });
-  return { records, rawLines };
+  return { records, rawLines, eol };
 }
 
 /**

@@ -331,7 +331,7 @@ async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
   // index-aligned. ALL the analysis below runs on the parsed `records` (that's
   // fine); only the bytes we eventually WRITE come from `rawLines`, so survivors
   // are preserved verbatim instead of re-serialized from a possibly-empty parse.
-  const { records, rawLines } = loadJsonlWithRaw(req.file_path);
+  const { records, rawLines, eol } = loadJsonlWithRaw(req.file_path);
   baseDiag.total_lines_before = records.length;
 
   // How many lines in the ORIGINAL file failed to parse (became `{}` while the
@@ -529,7 +529,9 @@ async function runSurgery(req: SurgeryRequest): Promise<SurgeryResult> {
     }
   }
 
-  const finalContent = segments.join("\n") + "\n";
+  // Join with the file's detected ending so verbatim survivors and the
+  // re-serialized lines never produce a mixed \r\n / \n file.
+  const finalContent = segments.join(eol) + eol;
   baseDiag.file_size_after_bytes = Buffer.byteLength(finalContent);
 
   if (req.dry_run) {
