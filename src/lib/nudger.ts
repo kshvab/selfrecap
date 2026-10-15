@@ -10,7 +10,9 @@
  * one-shot `claude -p` on a cheap model (`nudge.model`), in the session's own
  * account, told to send a fixed text verbatim. The model writes nothing. A
  * nudge is recorded when the courier exits cleanly, and `nudge_failed` (not
- * ok) when it does not. Each courier is a `claude -p` run billed to that
+ * ok) when it does not. Delivered is not read: a session in another
+ * permission mode than the courier's may hold the message for its operator's
+ * approval. Each courier is a `claude -p` run billed to that
  * account like any other.
  *
  * Needs Claude Code with cross-session messaging (SendMessage between

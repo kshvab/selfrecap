@@ -223,7 +223,16 @@ function runDetached(spec: RestartJob): number {
   fs.mkdirSync(RUN_DIR(), { recursive: true });
   const file = path.join(RUN_DIR(), `${spec.kind}-${crypto.randomUUID()}.json`);
   fs.writeFileSync(file, JSON.stringify(spec));
-  const commandLine = `"${process.execPath}" --import ${TSX_LOADER} "${SELF}" _run "${file}"`;
+  let commandLine = `"${process.execPath}" --import ${TSX_LOADER} "${SELF}" _run "${file}"`;
+  // The helper starts with the user's own environment, not ours: a log folder
+  // chosen with RECAP_LOG_DIR has to be handed over, or the helper would look
+  // for this spec (and the lock) in the default one.
+  if (process.env.RECAP_LOG_DIR) {
+    const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
+    commandLine =
+      `powershell.exe -NoProfile -Command "$env:RECAP_LOG_DIR=${q(process.env.RECAP_LOG_DIR)}; ` +
+      `& ${q(process.execPath)} --import ${q(TSX_LOADER)} ${q(SELF)} _run ${q(file)}"`;
+  }
   try {
     return launchDetached(commandLine, REPO);
   } catch (e: any) {
