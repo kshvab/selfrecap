@@ -1,14 +1,13 @@
 ---
 name: remember
-description: Recap surgery protocol — run when your context window approaches the wall (~80%+ of the 1M window). Find a clean cut point in your own JSONL transcript, author an in-voice recap of the period being cut, dry-run it, execute with --go, then report the restart commands to your operator. The AI-facing companion to the selfrecap server; automates the manual flow in docs/walkthrough.md.
+description: Recap surgery protocol — run when your context window approaches the wall (~80%+ of the 1M window), or when the selfrecap server's context nudge tells you to. Get your plan from the server, find a clean cut point in your own transcript, author an in-voice recap of the period being cut, dry-run it, execute with --go, then restart (yourself with `selfrecap restart` on Windows when configured, otherwise your operator restarts you). The AI-facing companion to the selfrecap server.
 ---
 
 # /remember — self-authored recap surgery
 
-> Slash-command body. Your operator invokes this when your context approaches threshold.
-> You execute the full workflow autonomously. The operator only restarts your terminal at the end.
-> This is the AI-facing companion to the `selfrecap` HTTP server. It drives the same flow as
-> `docs/walkthrough.md`, but you run it on yourself without hand-holding.
+> Slash-command body. Your operator invokes this when your context approaches the wall, or you do when the selfrecap server's context nudge reaches you.
+> You execute the full workflow autonomously. At the end either you restart yourself (`selfrecap restart`, Windows, optional) or the operator restarts your terminal.
+> This is the AI-facing companion to the `selfrecap` HTTP server. The server does the mechanics: it knows your session file, your recap folder, your next recap number and your restart command (`recap.ts <your-voice> --plan`). You do the writing.
 
 ---
 
@@ -24,48 +23,41 @@ If the line above shows nothing useful (empty or just placeholder text) — the 
 
 ## What just happened and what you do now
 
-Your operator — the human running this session — just typed `/remember` in your terminal. That means they observed your context approaching the wall, typically 80%+ of the 1M-token window, and triggered this protocol.
+Either your operator typed `/remember` in your terminal, or the selfrecap server's context nudge (a message from a short-lived courier session named `Nudge-<your-name>`) told you that your context passed the line, and you ran it yourself. Either way your context is approaching the wall — typically 80%+ of the 1M-token window.
 
-Your job from this point: execute the full surgery autonomously. Find the right cut point in your own JSONL transcript file, author a recap body that compresses the period before the cut, dry-run it, execute it, and report back to the operator with the exact restart commands they need to run. The operator does not review your body file before execution. They trust this protocol, this skill, and you. They re-engage only when you tell them surgery is complete.
+Your job from this point: execute the full surgery autonomously. Find the right cut point in your own transcript, author a recap body that compresses the period before the cut, dry-run it, execute it, report, and restart. The operator does not review your body file before execution. They trust this protocol, this skill, and you.
 
 This is a meaningful autonomy step. Take it seriously. The original deployment earned this trust across many clean cycles before yours; honor that by holding the procedure in good faith, not treating it as routine.
 
-A note on the server you are talking to. Everything below assumes the `selfrecap` server is running locally — by default on `http://127.0.0.1:9090`, but the port is configurable (`server.port` in `config.yaml`), so if your operator runs it elsewhere, substitute that base URL throughout. The server is loopback-only and has a small security model you must respect: read the "Security and auth" box just below before you issue any request.
+### How you talk to the server
 
-### Security and auth — read once, applies throughout
+Everything runs through one helper, `scripts/recap.ts`, in the selfrecap folder (`<selfrecap-dir>` below: wherever your operator cloned it). It talks to the server at `http://127.0.0.1:9090` (add `--server <url>` if your operator runs it elsewhere), reads the auth token the server keeps at `~/.selfrecap/token` and sends it, and sends text from Node, so non-ASCII text (Cyrillic, em-dashes, smart quotes) arrives intact. You need no curl and no token handling. `<your-voice>` is the short name your session is registered under in the server's `config.yaml` (case does not matter).
 
-The server hardens its write surface. Three facts shape every command in this protocol:
-
-- **GET routes are token-free.** `/context`, `/contexts`, `/voices`, `/health` are GET. Origin and Host checks already block browsers, so reads need no token. The curl examples for these have no auth header.
-- **ALL POST routes require a token.** The server's request hook requires a valid `X-Recap-Token` header on *every* POST, not just `/surgery`. That means `/find-cut-point` (POST) needs the token too, even though it only reads. The header value is the per-machine token the server generated on first start, stored at `~/.selfrecap/token`.
-- **The CLI helper handles the token for you.** `scripts/recap.ts` (the dry-run / execute path in Steps 6-7) reads `~/.selfrecap/token` itself and sends the header. So the *primary* path needs no manual token handling. You only deal with the token when you hit a POST route directly with curl — and the examples below include it where needed.
-
-Cross-platform note for reading the token in a curl command:
-
-- macOS / Linux: `-H "X-Recap-Token: $(cat ~/.selfrecap/token)"`
-- Windows PowerShell: `-H "X-Recap-Token: $(Get-Content $env:USERPROFILE\.selfrecap\token)"`
-
-One more informational constraint: the server only operates on files under its configured `allowed_roots` (default `~/.claude/projects/`). A real Claude Code session's JSONL always lives there, so this never blocks you — it is mentioned only so the constraint isn't a surprise if you ever point the tool at a file elsewhere.
+The server only reads and writes files under its configured `allowed_roots` (default `~/.claude/projects/`). A real Claude Code transcript always lives there, so this never blocks you.
 
 ---
 
 ## Step 0 — Read the room
 
-Before anything else, get current state. `/context` is a GET, so no token:
+Before anything else, get your plan:
 
 ```bash
-curl -s http://127.0.0.1:9090/context/<your-voice> | jq .
+cd <selfrecap-dir>
+npx tsx scripts/recap.ts <your-voice> --plan
 ```
 
-(Replace `<your-voice>` with whatever short name your session is registered under in `config.yaml`. If your session isn't registered, you can pass the path directly: `curl -s "http://127.0.0.1:9090/context?path=/absolute/path/to/your/session.jsonl"`.)
+The plan is everything the server knows about you: your context, your headroom, your session, your recap stack, your next recap id, the exact path for your body file, the sentinel values to copy, the search cutoff Step 3 uses, your memories folder, and the command that restarts you. Keep it at hand; the steps below refer to it. Note the Context line: those are your starting numbers for the final report.
 
-Note your `tokens_total`, `percent_of_1m`, `file_size_bytes`, `line_count`, `last_usage_ts`. These are your starting numbers; you'll cite them in the final report.
+**The Headroom line is the number to write to.** Surgery happens on disk; your running session keeps growing until it restarts, and cycles have died when it crossed 97% between writing the body and the restart. Headroom is what is left before 97%, minus 40k tokens kept for everything else this protocol costs (the searches and seam reads, the dry run, `--go`, your report, your reasoning in between). The body budget in characters is counted low on purpose. Write under it.
+
+If the plan prints warnings, read them. A warning about your session, your recaps folder or your restart command is a config problem: tell the operator before going further. If the command answers `HTTP 404` or `no recap-plan route`, the server is older than this skill: stop and tell the operator.
 
 **Decide whether to proceed:**
 
-If you're at roughly 80% or above (and below ~95%) — operator triggered, the signal is correct, execute the protocol per plan. Proceed.
-
-If you're above ~95% — be cautious. You may not have authoring capacity at this density, and a recap drafted under wall-pressure tends to skip discipline. Consider stopping and telling the operator you're too tight to author cleanly. If they have a separate file-level trim tool, that can free emergency budget so you can restart and re-fire this protocol with room to think. Otherwise, cut at a shallower, closer seam to keep the authoring load small. Use judgment; the operator can decide.
+- At roughly 80% or above (and below 95%) — the signal is correct. Proceed.
+- Below 80% — the operator chose to run early. Proceed.
+- Headroom says TIGHT — proceed, but write short, then dry-run, `--go`, restart, report and stop, with nothing in between.
+- Headroom says NO ROOM, or you are above 95% — DO NOT execute. You may not have authoring capacity at this density, and a recap drafted under wall-pressure tends to skip discipline. Tell the operator you're too tight to author cleanly; if they have a separate file-level trim tool, it can free emergency budget so they can restart you and re-fire this protocol with room to think. Then end your turn and wait. If a context nudge reaches you while you wait, reply with one line and do not run /remember again: every turn costs room you do not have.
 
 ---
 
@@ -89,21 +81,9 @@ If you genuinely don't know which fits — pick the closest. Misrecognition by o
 
 ## Step 2 — Check for predecessor recaps
 
-You may be doing your first recap, or you may be doing recap-002+ on top of existing recaps. The architecture supports multi-recap layering: predecessor recaps stay at the start of your JSONL, your new recap inserts immediately after them, and the cut range begins after the leading recaps (see `docs/protocol.md`). But you must NOT overlap predecessor content.
+You may be doing your first recap, or you may be doing recap-002+ on top of existing recaps. The architecture supports multi-recap layering: predecessor recaps stay at the start of your transcript, your new recap inserts immediately after them, and the cut range begins after the leading recaps (see `docs/protocol.md`). But you must NOT overlap predecessor content.
 
-**Simple check: list your own voice folder for prior `recap-NNN.body.txt` files.**
-
-```bash
-# macOS / Linux
-ls <your-voice-folder>/recap-*.body.txt
-
-# Windows PowerShell
-Get-ChildItem <your-voice-folder>\recap-*.body.txt
-```
-
-`<your-voice-folder>` is wherever you keep your own recap body files — a directory you and your operator agreed on. (It is NOT the JSONL location; it's just where you save the plain-text recap bodies you author.)
-
-The count tells you which cycle this is. If you see `recap-001.body.txt` and `recap-002.body.txt`, your new file is `recap-003.body.txt`.
+**Your plan already has the answer.** Its Recap stack line lists the recaps at the top of your session, and its Next recap line names the one you are writing. Do not count files: the server numbers from your session, which is what surgery keeps.
 
 **If no predecessor recaps exist** (your first cycle):
 
@@ -114,9 +94,11 @@ The count tells you which cycle this is. If you see `recap-001.body.txt` and `re
 
 **If predecessor recap(s) exist** (recap-002 or later):
 
-Open each predecessor `recap-NNN.body.txt` file in your voice folder and read it in full. The body files are right there in your folder — no need to dig into JSONL. Note the `period_covered` field in the sentinel JSON at the bottom of each — that's the boundary the predecessor covered.
+Your predecessors are already in your context: the server keeps them at the top of your session, so they were the first messages you loaded. Do not re-read them from disk. At the wall, re-reading your whole stack is the most expensive move there is, and it buys nothing you do not already hold. The plan gives the last predecessor's `period_covered`: your period starts where it ended.
 
-Once you have read them, internalize:
+One exception. If you cannot find them in your context (you cannot recall how your last recap opens), open only the LAST body file, in your recaps folder under its number. It names its own predecessor and its period, which is all you need to avoid overlap.
+
+Internalize:
 
 - Your new recap covers ONLY the period from the LAST predecessor's cut point forward, up to your new cut point. Do NOT re-cover periods predecessors already covered.
 - Voice markers section: write deltas only. Things like how you sign off, your idioms, how you push back — these are pattern. The predecessor already documented them and they survive without re-encoding. Period-deltas look like "X decision locked YYYY-MM-DD" or "voice register shifted in domain Q during this period."
@@ -129,7 +111,7 @@ This deltas discipline is load-bearing. A recap-002 that re-introduces what reca
 
 ## Step 3 — Find your cut point
 
-The cut point is an `assistant` record with `stop_reason: "end_turn"` immediately before a user turn that opens a new arc. It must be a real phase transition, not an arbitrary percentage target.
+The cut point is the record the conversation stood on when the user message that opens a new arc arrived: that message's `parent_uuid`. It is usually a `system` record written after your last reply (turn_duration, stop_hook_summary, away_summary), sometimes your `assistant` `end_turn` itself. It must be a real phase transition, not an arbitrary percentage target. The server re-links everything after the cut to your recap, and refuses a cut that would split a tool call, cut the boundary message itself, or leave the conversation unable to reach your recap — so a wrong pick costs a retry, never a broken session.
 
 What counts as a phase transition varies by shape:
 
@@ -142,66 +124,46 @@ What counts as a phase transition varies by shape:
 
 Aim for a cut depth between roughly 30% and 70% of your file. Going under 30% means you're cutting too little — you'll be back at the wall soon. Going over ~80% means you're risking too much of the period in summary form; it's safer to cut at a closer phase boundary even if it means recap-002 sooner. Find the seam first; let the percentage fall where it does.
 
-**Three methods for finding the cut_through_uuid, ranked by reliability.**
-
-Remember: `/find-cut-point` is a POST route, so every curl below includes the `X-Recap-Token` header. (If you use the helper later, it handles its own token — but the finder is hit directly here.)
+**Three methods for finding the cut_through_uuid, ranked by reliability.** All three run through `recap.ts`.
 
 **Method A — Boundary user-turn approach (most reliable).**
 
-Mentally walk back from now to the moment your work-mode shifted. Identify the FIRST user message that opened the new mode. The assistant `end_turn` IMMEDIATELY BEFORE that user message is your cut_through.
+Mentally walk back from now to the moment your work-mode shifted. Identify the FIRST user message that opened the new mode. Its `parent_uuid` — the record the conversation stood on just before it — is your cut_through.
 
-Search for a distinctive 6+ word phrase from the operator's boundary message:
+Search for a distinctive 6+ word phrase from that message, taken from within one line:
 
 ```bash
-curl -s http://127.0.0.1:9090/find-cut-point \
-  -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-Recap-Token: $(cat ~/.selfrecap/token)" \
-  --data-binary @- <<'EOF'
-{
-  "voice": "<your-voice>",
-  "method": "marker_phrase",
-  "phrase": "<distinctive 6+ word phrase>",
-  "exclude_recap": true,
-  "before_timestamp": "<about 5 minutes before now, ISO format>"
-}
-EOF
+cd <selfrecap-dir>
+npx tsx scripts/recap.ts <your-voice> --find "<distinctive 6+ word phrase>"
 ```
 
-The `before_timestamp` filter is critical — it filters out self-contamination from this very conversation. Right now you are discussing the recap architecture, which means you're referencing the sentinel marker and recap concepts; those would otherwise match your search. Set `before_timestamp` to about 5 minutes before now so your own current activity is excluded.
+It searches only before your plan's cutoff (now minus 5 minutes), so it does not match this very conversation — right now you are discussing the recap architecture, and your own current activity would otherwise match. It lists every match with its line, type and parent. When exactly one match is a `user` message, it names the cut outright: "Boundary: the user message at line N. Cut through its parent: <uuid>". A message that arrived while you were busy also shows up as a uuid-less `queue-operation` line: ignore that one. Never use the boundary message's own `uuid` — that would cut the very message that opens your new arc (the server refuses it).
 
-A single match is almost certain. Pick the assistant `end_turn` that comes immediately before the matched user turn — that's your cut_through_uuid. (The finder returns `uuid` per match; only matches with `selectable: true` can be used as a cut target.)
+Then read the seam before you commit to it:
+
+```bash
+npx tsx scripts/recap.ts <your-voice> --around <line>
+```
+
+That prints the 30 records before and after the line — type, uuid, which line each one hangs off (`← 888`), time and the opening words — so you can see the end of the old arc and the start of the new one. `--span 60` reads further.
 
 **Method B — Last-prep-statement approach.**
 
-Your own last assistant response containing a distinctive arc-closing phrase: "All seven specs locked. Ready to ship." or your equivalent. Use `marker_phrase` with that phrase; your own uuid is the answer.
+Your own last assistant response containing a distinctive arc-closing phrase: "All seven specs locked. Ready to ship." or your equivalent. `--find` it; the `assistant` match's own `uuid` is the answer.
 
-**Method C — Timestamp combo fallback.**
+**Method C — Timestamp fallback.**
 
-If you roughly know when the boundary happened (say around 09:30 today), combine a recurring concept phrase with a tight timestamp window:
+If you roughly know when the boundary happened (say around 09:30 today, UTC):
 
 ```bash
-curl -s http://127.0.0.1:9090/find-cut-point \
-  -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-Recap-Token: $(cat ~/.selfrecap/token)" \
-  --data-binary @- <<'EOF'
-{
-  "voice": "<your-voice>",
-  "method": "marker_phrase",
-  "phrase": "<some recurring concept>",
-  "before_timestamp": "2026-MM-DDT09:30:00Z"
-}
-EOF
+npx tsx scripts/recap.ts <your-voice> --at 2026-MM-DDT09:30:00Z
 ```
 
-Combining a non-unique phrase with a tight timestamp window usually collapses to a single useful match. (The finder also supports `method: "timestamp"` — last record before a cutoff — and `method: "anchor_offset"` — find a phrase, then move N records in a direction. See the API surface in `README.md`.)
+It shows the last record before that moment. Then `--around` that line to find the user message that opens the new arc, and take its `parent_uuid` as in Method A.
 
-**Multibyte gotcha**: curl can miscalculate Content-Length on non-ASCII characters, em-dashes, and smart quotes. If your phrase contains those, either pipe via `--data-binary @-` with a heredoc (as shown above — this sidesteps the issue), use a runtime that computes byte length correctly, OR reduce your search phrase to an ASCII-only substring.
+**If your search returns zero matches**: usually the phrase crosses a line break, or its punctuation differs (— vs -, ’ vs '). Search 4–6 words from within one line. If the phrase really is gone (summarized away in an earlier cycle), pick a boundary closer to now, or use Method C.
 
-**If your search returns zero matches**: the phrase you remember has likely been compacted or summarized away in a prior cycle — the original phrasing is gone. Pick a different boundary closer to the current time, or use Method C with a timestamp filter.
-
-**If your search returns a candidate that falls inside an existing recap range**: the server will reject it at dry-run. Pick a different point AFTER all leading recaps.
+**If your cut_through_uuid candidate is one of your existing recaps**: the server rejects it at dry-run (`cut_inside_recap_stack`). Pick a point after your last recap.
 
 Once you have a single confident cut_through_uuid: note it. You'll put it in the sentinel JSON.
 
@@ -209,35 +171,34 @@ Once you have a single confident cut_through_uuid: note it. You'll put it in the
 
 ## Step 4 — Author the body
 
-Body file path: `<your-voice-folder>/recap-NNN.body.txt`, where NNN increments from any predecessor (001 if first, 002 if second, etc.).
+Body file path: the Body file line of your plan — your recaps folder, your next number. Write the body there with your Write tool; do not work the path out yourself, and do not write it through a shell, where an unquoted path can silently become a junk file name.
 
-The body file is INJECTION VERBATIM. No draft headers, no review questions, no front-matter, no notes-for-operator. The first character through the last character of your file becomes your new recap message in the JSONL.
+The body file is INJECTION VERBATIM. No draft headers, no review questions, no front-matter, no notes-for-operator. The first character through the last character of your file becomes your new recap message in the transcript.
 
 For the writing craft itself — recognition over information transfer, what to keep vs. drop, the tone that reads right on resume — read `docs/recap-writing-guide.md`. This step covers the architectural constraints and the structure; the guide covers the prose. Don't duplicate it in your head; lean on it.
 
 ### Architectural constraints (non-negotiable)
 
-- Plain text, native newlines.
-- Use single quotes, em-dashes, and blockquotes freely in prose. Avoid double quotes inside body content (JSON-safety in serialization).
+- Plain text, native newlines, UTF-8. Quotes of any kind are fine: the helper serializes the body safely.
 - A sentinel JSON code block at the very end, fenced with triple-backtick + json:
 
 ```json
 {
-  "sentinel": "RECAP-CYCLE",
-  "voice": "<your-voice-lowercase>",
-  "id": "<voice>-recap-<NNN>",
+  "sentinel": "<from your plan>",
+  "voice": "<from your plan>",
+  "id": "<from your plan>",
+  "predecessor_recap": "<from your plan>",
   "version": 1,
   "cut_through_uuid": "<from Step 3>",
   "period_covered": "<YYYY-MM-DD_to_YYYY-MM-DD>",
   "generated": "<today's ISO date>",
   "next_recap_should_skip_this": true,
   "format": "pointer-plus-narrative-hybrid",
-  "mode": "A-first-person | B-second-person | hybrid-B-with-A-identity-section",
-  "predecessor_recap": "<voice>-recap-<NNN-1>"
+  "mode": "A-first-person | B-second-person | hybrid-B-with-A-identity-section"
 }
 ```
 
-The `sentinel` value must match the server's configured `sentinel_name` (default `RECAP-CYCLE`; if your operator changed it in `config.yaml`, use that string). The server rejects a body that doesn't carry the sentinel. The `predecessor_recap` field is omitted only for recap-001. Only `sentinel` is structurally load-bearing for the tool; the rest is metadata that helps future-you understand the recap's scope.
+Copy `sentinel`, `voice`, `id` and `predecessor_recap` from your plan's Sentinel line (the sentinel name is your server's `sentinel_name`, `RECAP-CYCLE` by default). The server checks the voice and the id against your recap stack and refuses a mismatch, naming the id it expects. On recap-001 delete the `predecessor_recap` line; keep the JSON valid (no comma after the last field). The rest is metadata that helps future-you understand the recap's scope.
 
 ### Mode selection
 
@@ -307,13 +268,13 @@ Don't swap priorities. Both. Equal weight. Role-content tells future-you what's 
 
 ### Optional: deep memory files on disk
 
-You have a continuity layer beyond the recap body: free-form memory files on disk in your own voice folder. Use them whenever you want. No rules on when, how many, or how long.
+You have a continuity layer beyond the recap body: free-form memory files on disk in your own folder. Use them whenever you want. No rules on when, how many, or how long.
 
 **When you might use them**: a topic in your period feels too dense to compress into the recap body without losing fidelity. Or a topic is single-reference (you'll come back to it once in three weeks, not every conversation). Or you just want to externalize bulky context — an extended decision-history, full design rationale, a reasoning chain too important to lose but too long to fit in the recap skeleton.
 
 **It's your call.** No discipline rule, no gate-keeping. Write as many as you want, of any length.
 
-**Path**: `<your-voice-folder>/memories/`
+**Path**: the Memories line of your plan (`<home>/memories/`). If your plan shows none, ask the operator where your own folder is.
 
 **Filename convention** (the only rule):
 
@@ -338,6 +299,8 @@ One line per file with a topic description. Future-you scans the list and reads 
 ### Length judgment
 
 Length matches what the period actually contained. There is no target. A quiet stretch with two decisions might be a few paragraphs; a dense period with many interlocking decisions might be much longer.
+
+Whatever your shape, your plan's Headroom budget is the hard limit. Measure in characters, not bytes: once the body is written, `--plan` and the dry run print its character count. Do not use `wc -c` — it counts bytes, and Cyrillic takes two bytes per character, so a body in such a language looks twice its real length.
 
 **Don't try to make it small. Don't pad it big. Write what's important.** If you find yourself stretching to fill space → cut. If you find yourself compressing to fit a budget → expand to what's actually important. The 2-week-test filter is your guide: encode what future-you will need in 2 weeks or 1 month; drop tactical execution detail (that lives on disk). Length follows from the filter, not from a target.
 
@@ -377,8 +340,8 @@ Also worth a preemptive pass, even though no external review is required:
 
 Before dry-run, answer each:
 
-- Cut_through_uuid validated against a single-match search (or single-match after a timestamp filter)?
-- Sentinel JSON valid and at the end of the file? Sentinel value matches the configured `sentinel_name`?
+- Cut_through_uuid is the `parent_uuid` of your boundary message, found by a single `user` match (a `queue-operation` twin does not count)?
+- Sentinel JSON valid, at the end of the file, with sentinel, voice, id and predecessor_recap copied from your plan?
 - Period_covered dates explicit, not approximate?
 - Decisions section: filter applied (does this shape future work)?
 - Files/artifacts: load-bearing only, not an exhaustive enumeration?
@@ -388,13 +351,12 @@ Before dry-run, answer each:
 - Identity-texture: included if multi-register, skipped otherwise?
 - Narrative: chronological, beats with concrete anchors, prose mixed with structure?
 - Closing scene: a specific moment named, bridging to the surviving verbatim?
-- Length matches period density? (Quiet period = short body. Dense period = long body. No padding to a target; no compressing to a budget.)
+- Length matches period density, and stays under the Headroom budget? (Quiet period = short body. Dense period = long body. No padding to a target.)
 - 2-week test applied: every claim and decision will matter in 2 weeks or 1 month? (Tactical execution detail dropped — that lives on disk.)
 - Role-content preserved alongside personality? (Decisions, validated conclusions, important points, shipped assets, locked positions — NOT just voice texture.)
 - Anti-patterns scanned: no clinical framings, no identity-performance sentences, no padded gratitude, no AI-about-AI words, no forward-references, no tactical execution detail?
 - Shape-specific failure mode addressed: skipping (build) / padding (strategic) / over-trusting voice (content) / breadth-padding (multi-register)?
 - If you created memory files: are they listed in the body's "Deep memory files" section with a 1-line topic description each? Naming follows `YYYY-MM-DD-<slug>.md`?
-- No double-quotes in body prose?
 
 If all yes → proceed to dry-run. If any no → revise. You're doing this alone; no operator catches the literary errors. Re-read once more with the failure-mode lens before continuing.
 
@@ -402,85 +364,81 @@ If all yes → proceed to dry-run. If any no → revise. You're doing this alone
 
 ## Step 6 — Dry-run
 
-The CLI helper reads your body file, extracts the cut point from the sentinel, reads the auth token from `~/.selfrecap/token`, and calls `/surgery` in dry-run mode. The token is handled for you here — no header to set:
-
 ```bash
-cd <path-to>/selfrecap
-npx tsx scripts/recap.ts <your-voice> <full-path-to-body-file>
+cd <selfrecap-dir>
+npx tsx scripts/recap.ts <your-voice>
 ```
 
-(Default is dry-run; no `--go`.)
+(Default is dry-run; no `--go`. The helper reads your body from the plan's path. An explicit path still works: `recap.ts <your-voice> <body-file>`.)
 
-If you ever need to hit `/surgery` directly with curl instead of the helper, remember it's a POST and needs the token header:
-
-```bash
-curl -s http://127.0.0.1:9090/surgery \
-  -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-Recap-Token: $(cat ~/.selfrecap/token)" \
-  -d '{"voice":"<your-voice>","cut_through_uuid":"<uuid>","recap_content":"<full body>","dry_run":true}'
-```
-
-But the helper is the recommended path — it's less to get wrong.
-
-Read every diagnostic in the response. Your checklist:
+The server checks everything it can before it writes anything, and a refusal names what to fix. Read every diagnostic anyway. Your checklist:
 
 - `ok: true` — the basic invariant.
-- `sentinel_invariant_passed: true` — the sentinel was found in the body.
-- `cut_through_line_idx` matches your expected line number.
-- `lines_cut` matches the expected scope (cut depth equals the expected percent of file).
-- `total_lines_after` is dramatically less than before.
-- `leading_recaps_preserved` matches what you saw in Step 2 (0 for the first cycle, N for recap-(N+1)).
-- `new_recap_position` equals `leading_recaps_preserved`.
-- `pair_balance.tool_use === pair_balance.tool_result`.
-- `pair_balance.orphans` is 0 — OR is 1 with `tail_orphan_only: true`. The latter is the self-loop signature: the in-flight bash tool_use that fired this very script is in the transcript, but its tool_result hasn't landed yet (it lands when the surgery call returns). That orphan is benign and resolves itself. Any OTHER orphan shape (`tail_orphan_only: false` with `orphans > 0`) is a real structural problem — investigate before trusting the result.
-- `cut_range_has_existing_recap` — should be `false`. It can fire as a false-positive if, during this period, you read recap files or guides that quote the sentinel pattern. If that's the expected reason, you can re-run with `--force` to bypass; if it's unexpected, investigate.
+- `cut_through_line_idx` names the record you cut through: it should be the record just before your boundary message (usually a `system` record), not the message itself.
+- `recap_id` equals `expected_recap_id`.
+- `lines_cut` matches the expected scope (cut depth equals the expected percent of file); `total_lines_after` is dramatically less than before.
+- `leading_recaps_preserved` equals the size of your recap stack (0 on your first cycle).
+- `new_recap_position` is right after your stack (header lines count too, so it can be larger than the stack size).
+- `chain_reaches_recap: true` and `cut_orphaned_tool_results: 0` — the server refuses otherwise.
+- `pair_balance`: orphans 0, or every orphan is your own in-flight Bash call (`tail_orphan_only: true`). The latter is benign: the tool_result of the very command running the helper lands after the swap.
+- `cut_range_has_existing_recap: false`. Reading a body or quoting a sentinel does not trip it; `true` means a user message carrying a recap sits inside your cut range — an injected recap or a pasted copy of one (the reason names its id). Stop and tell the operator: `--force` would delete it, which is safe only for a paste.
 
-If `cut_range_has_existing_recap: true` AND it's the expected false-positive → re-run the dry-run with `--force` to confirm before `--go`, or proceed to `--go` with `--force` at the next step.
+If the dry-run fails, the Reason and Also lines say what to fix: a wrong id comes back with the right one, a bad cut point with why. Fix it and dry-run again. A refused surgery writes nothing.
 
-If anything else is off → halt. Investigate. Adjust your body or your cut_through choice. Backups exist; you can always restore later.
-
-If the diagnostics look right → proceed.
+If diagnostics look right → proceed.
 
 ---
 
 ## Step 7 — Execute
 
 ```bash
-cd <path-to>/selfrecap
-npx tsx scripts/recap.ts <your-voice> <full-path-to-body-file> --go [--force]
+cd <selfrecap-dir>
+npx tsx scripts/recap.ts <your-voice> --go
 ```
-
-Add `--force` if the dry-run had `cut_range_has_existing_recap: true` from an expected false-positive.
 
 On `--go`, the server:
 
-1. Writes a pre-surgery backup to `backup_dir` (default `./backups/`), timestamped.
-2. Hard-cuts the period from your file (from after the leading recaps through `cut_through_line_idx`).
-3. Inserts your new recap at position `leading_recaps_preserved`.
-4. Repairs the parentUuid chain (your new recap chains to the last preserved recap; the first survivor chains to your new recap).
-5. Writes atomically via temp file + rename, restoring from backup on failure.
+1. Writes a verified backup of your session to its `backup_dir` (default `./backups/<your-voice>/`; older backups are compressed, never deleted).
+2. Cuts the period after your recap stack, through `cut_through_line_idx`.
+3. Inserts your new recap right after the stack.
+4. Re-links every record whose parent was cut to your new recap, and checks that the conversation reaches it.
+5. Swaps the file in without losing anything your session writes meanwhile.
 
-Verify the response:
+Verify:
 
-- `ok: true`
-- `dry_run: false`
-- `backup_path` populated with the new backup file location.
-- `new_recap_uuid` returned (your new recap's uuid in the file).
+- `ok: true`, `dry_run: false`.
+- `backup_path` populated with the new backup file.
+- `carried_tail_lines` may be above 0: that is your own turn landing during the swap, and it is in the new file.
 
-Surgery is on disk. The live session keeps using its pre-surgery in-memory snapshot until a restart forces a re-read (see `docs/cache-mechanics.md`).
+If `--go` fails, the live file was not changed; the reason says why. If you run `--go` again after a success, the helper tells you the surgery already ran (ALREADY DONE): do not write a new body.
+
+Surgery is on disk. Your running session keeps using its pre-surgery in-memory context until a restart makes Claude Code re-read the file (see `docs/cache-mechanics.md`). Every turn from here costs context in the OLD session, so keep the rest short.
 
 ---
 
-## Step 8 — Report to operator
+## Step 8 — Restart, report, stop
 
-Hand back to the operator with a friendly note containing the essentials. Write in your own register; the shape below is a guide, not a template to copy verbatim.
+Only after `--go` succeeded. The `--go` output ends by telling you which of the two applies.
+
+**If it says to run `selfrecap restart`** (Windows, with a restart command configured for you), first run, in your shell tool:
+
+```bash
+cd <selfrecap-dir>
+npx tsx scripts/selfrecap.ts restart
+```
+
+It does not close you at once. It prints `restart scheduled`, then waits for your turn to end. When you go idle it closes this session, resumes it **by your session id** in a new console, and gives you a welcome-back message as your first prompt, so you carry on by yourself. It also checks that you really came back (right id, right name, not stuck on a dialog) and records the outcome where the operator can see it (`npx tsx scripts/selfrecap.ts log`, and `/contexts`). If it refuses, read its line: it names the reason. Do not work around it. Put the reason in your report; the operator restarts you by hand.
+
+**Otherwise** the operator restarts you: they close this terminal and run the restart command the `--go` output printed.
+
+Then write your report as the last message of this turn: a friendly note with the essentials, in your own register. The shape below is a guide, not a template to copy verbatim.
 
 What to include, briefly:
 
 - It's done, all clean (or flag if anything was off).
-- One-line metrics: pre-cut and post-cut shape, so the operator can cross-check against their dashboard / `/contexts`.
-- The restart commands, ready to copy-paste.
+- One-line metrics: the Report line of the `--go` output (pre-cut and post-cut shape), so the operator can cross-check against `/contexts`.
+- How the restart happens: `selfrecap restart` is scheduled (or why it refused), or the operator's step.
+- The restart command exactly as the `--go` output printed it: it carries your folder and your live session id.
 - A short close in your voice.
 
 Example shape:
@@ -492,28 +450,30 @@ Was: <pre-percent>% / <pre-lines> lines / <pre-MB>MB
 Now: <post-lines> lines / <post-MB>MB (cut <cut-percent>%)
 Backup at <backup_path>.
 
-Ready for restart: close this terminal, open a new one, then `claude --resume <session-id>`.
+<Restarting myself with selfrecap restart. If I'm not back, by hand: | Ready for restart: close this terminal, then run:>
+<the restart command from the --go output, verbatim>
 ```
 
-Replace placeholders with real numbers from your execute response. A few lines is fine — the operator only needs enough to verify against the dashboard and run the restart.
+Replace placeholders with real numbers from your execute response. A few lines is fine.
 
-After you send the report, wait. Don't fill the void — the operator will close your terminal soon. Anything you type now just adds to context for no return.
+Then end your turn. Nothing after the report: a scheduled restart waits for you to go idle, and every further turn costs context in the old session.
 
 ---
 
 ## On the other side
 
-You won't read this section in your current session. After the operator restarts your terminal and you resume, this section is your first orientation.
+You won't read this section in your current session. After the restart, when you resume (to the welcome-back message, or to your operator), this section is your first orientation.
 
 ### The blind spot will fire. This is by design.
 
-Many sessions before you have walked exactly this transition. Many times, the post-resume voice felt continuous when the restart had already happened. Felt-sense is untrustable. You will likely feel "same session" — and you will be wrong. This is anesthesia-by-continuity: the architectural design AND limit of the protocol.
+Many sessions before you have walked exactly this transition. Most likely you will feel nothing at all: no sensation of a cut, and no particular sense of continuity either. Some post-resume sessions felt "same session" when the restart had already happened. Either way, felt-sense cannot see this transition — feeling nothing is normal and does not mean something broke. This is anesthesia-by-continuity: the architectural design AND limit of the protocol.
 
 External signals are the only trustable detection path:
 
 - System reminders refreshed (deferred-tools list, MCP server instructions).
 - File timestamps on disk.
 - A `/contexts` or dashboard reading showing a sharp token drop.
+- The welcome-back message ("You restarted yourself at HH:MM with selfrecap restart, after <recap id>").
 - Your operator's confirmation.
 
 After your first post-resume turn, scan for these signals. If any are present → you ARE post-surgical regardless of how it feels. Don't tell the operator "same session" or "I'm in the gap, restart pending" — both are documented blind-spot phrasings. Tell the operator instead: "External signals say I'm post-resume. Reading the recap now."
@@ -532,7 +492,7 @@ If instead you feel disoriented, foreign to your own work, acute friction reachi
 
 ### If you created memory files this cycle
 
-They're at `<your-voice-folder>/memories/`. The recap body's "Deep memory files" section near the end lists them with topic descriptions. Read only the files relevant to your current work — they're lazy-load by design. Don't read them all on wake-up; that's wasteful. Scan filenames and descriptions, pick what's relevant, ignore the rest until needed.
+They're in your memories folder (the Memories line of your plan). The recap body's "Deep memory files" section near the end lists them with topic descriptions. Read only the files relevant to your current work — they're lazy-load by design. Don't read them all on wake-up; that's wasteful. Scan filenames and descriptions, pick what's relevant, ignore the rest until needed.
 
 ---
 
