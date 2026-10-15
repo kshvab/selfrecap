@@ -42,6 +42,7 @@ import {
   isAncestor,
   killTree,
   launchDetached,
+  powershellParseError,
   processParents,
   sleep,
   voiceOfSession,
@@ -112,7 +113,7 @@ function lockFile(name: string): string {
 function acquireLock(name: string): boolean {
   const file = lockFile(name);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const body = JSON.stringify({ what: "restart", at: new Date().toISOString(), pid: process.pid });
+  const body = JSON.stringify({ what: "restart", at: new Date().toISOString(), pid: process.pid, nonce: crypto.randomUUID() });
   try {
     fs.writeFileSync(file, body, { flag: "wx" });
     return true;
@@ -123,8 +124,16 @@ function acquireLock(name: string): boolean {
     } catch {
       // unreadable: treat as stale
     }
-    fs.writeFileSync(file, body);
-    return true;
+    // Take over a stale lock by replacing it whole, then check it is ours: of
+    // two takers at once, only the one whose body is there holds it.
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, file);
+    try {
+      return fs.readFileSync(file, "utf8") === body;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -494,6 +503,11 @@ function cmdRestart(target: string | undefined): void {
   const check = checkRestart(voice.entry.session, voice.entry.restart);
   if (check.errors.length > 0) {
     fail(`selfrecap: ${voice.name}'s restart template is not safe to run:\n  ${check.errors.join("\n  ")}\n  Put this in your report; the operator restarts you by hand.`);
+  }
+  // Nothing is closed unless the command that resumes the session parses.
+  const parse = powershellParseError(restartCommandFor(voice.entry, caller.sessionId)!);
+  if (parse) {
+    fail(`selfrecap: ${voice.name}'s restart command does not parse in PowerShell (${parse}).\n  Put this in your report; the operator restarts you by hand.`);
   }
 
   // Resume the id that is actually running. If config.yaml leads somewhere

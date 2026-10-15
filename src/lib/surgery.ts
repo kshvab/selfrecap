@@ -42,10 +42,11 @@
  *     rounds continuing meanwhile. On failure the tmp is removed and the live
  *     file is left exactly as it was. It is never "restored" from the older
  *     backup: that would erase whatever the session had written since.
- *   - The last gap, between the final size check and the rename, is closed
- *     with a side hard link to the live file: after the rename it still
- *     reaches the old file, so any line that landed there in that instant is
- *     recovered and appended to the new file.
+ *   - The last gap, between the final size check and the rename, is
+ *     narrowed with a side hard link to the live file: after the rename it
+ *     still reaches the old file, which is watched until it stops growing, so
+ *     a line that landed there in that instant is recovered and appended to
+ *     the new file.
  *
  * Surgery is synchronous from the first read to the rename, so two surgeries
  * in this process can never interleave.
@@ -162,6 +163,8 @@ export interface SurgeryResult {
 }
 
 const SWAP_BUDGET_MS = 3000;
+/** How long the old file must stay the same size after the rename before its tail is taken. */
+const SIDE_SETTLE_MS = 200;
 const HALF_LINE_WAIT_MS = 120;
 const RETRYABLE = new Set(["EPERM", "EACCES", "EBUSY"]);
 const NL = Buffer.from("\n");
@@ -186,6 +189,7 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
   const dryRun = !!req.dry_run;
   const sentinelName = req.sentinel_name;
   const show = (p: string) => (req.expose_paths ? p : path.basename(p));
+  const errText = (e: any) => errorText(e, !!req.expose_paths);
   const warnings: string[] = [];
   const diag: SurgeryDiagnostics = {
     file_path: show(req.file_path),
@@ -346,6 +350,17 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
     );
   }
 
+  // The conversation must go on after the cut. A cut through the newest
+  // message leaves the recap as the leaf, and whatever Claude Code writes next
+  // (the result of the call running this surgery, the next reply) hangs off a
+  // record that is gone: the resumed session would never reach its recaps.
+  if (!recs.slice(cutIdx + 1).some((r) => isConversation(r))) {
+    problems.push(
+      `cut_at_the_end: no message survives after line ${cutIdx}, so the next one Claude Code writes would hang off a cut record. ` +
+        `Cut at an earlier seam: the end of an earlier turn.`,
+    );
+  }
+
   // Cutting through the boundary message itself drops the message that opens
   // the new arc: it ends up in neither the recap nor the kept text. Only when
   // an assistant reply to it survives — an interrupt line has no reply.
@@ -452,12 +467,12 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
   try {
     writeVerifiedBackup(backupPath, bytes.buf.subarray(0, bytes.completeLength));
   } catch (e: any) {
-    return fail(`backup_failed: ${e.message}. Nothing was changed.`);
+    return fail(`backup_failed: ${errText(e)}. Nothing was changed.`);
   }
   diag.backup_path = show(backupPath);
 
   const tmpPath = `${req.file_path}.${process.pid}-${crypto.randomBytes(4).toString("hex")}.surgery.tmp`;
-  const swap = swapIn(req.file_path, tmpPath, newContent, bytes, req.hooks, show);
+  const swap = swapIn(req.file_path, tmpPath, newContent, bytes, req.hooks, show, errText);
   diag.rename_attempts = swap.renameAttempts;
   if (!swap.renamed) {
     return fail(`not_applied: ${swap.error}. The live file was not changed. A verified copy of it is at ${show(backupPath)}.`);
@@ -475,7 +490,7 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
     try {
       writeDurable(backupPath, tail, "a");
     } catch (e: any) {
-      warnings.push(`the backup lacks the ${carriedLines} line(s) carried over during the swap: ${e.message}`);
+      warnings.push(`the backup lacks the ${carriedLines} line(s) carried over during the swap: ${errText(e)}`);
     }
   }
   if (req.voice) {
@@ -485,7 +500,7 @@ export function performSurgery(req: SurgeryRequest): SurgeryResult {
       diag.backups_compressed = rotation.compressed;
       for (const err of rotation.errors) warnings.push(`backup rotation: ${err}`);
     } catch (e: any) {
-      warnings.push(`backup rotation: ${e.message}`);
+      warnings.push(`backup rotation: ${errText(e)}`);
     }
   }
 
@@ -509,10 +524,11 @@ function carrierFields(
   // A required field may come from any record as a last resort (still newest
   // first); an optional one only from the conversation, never from an old
   // recap that carries the state of a session long gone.
+  const inConversation = new Set(conversation);
   const anyRecord = [...conversation];
   for (let i = recs.length - 1; i >= 0; i--) {
     const r = recs[i];
-    if (r && !conversation.includes(r)) anyRecord.push(r);
+    if (r && !inConversation.has(r)) anyRecord.push(r);
   }
   const pick = (key: string, from: JsonlRecord[]): unknown => {
     for (const s of from) {
@@ -566,6 +582,7 @@ function swapIn(
   read: SessionBytes,
   hooks: SurgeryHooks | undefined,
   show: (p: string) => string,
+  errText: (e: any) => string,
 ): SwapOutcome {
   const carried: Buffer[] = [];
   let carriedUpTo = read.completeLength;
@@ -635,7 +652,7 @@ function swapIn(
         sleepSync(Math.min(50 * renameAttempts, 250));
         continue;
       }
-      return finishSwap(livePath, side ? sidePath : null, carriedUpTo, Buffer.concat(carried), renameAttempts, show);
+      return finishSwap(livePath, side ? sidePath : null, carriedUpTo, Buffer.concat(carried), renameAttempts, show, errText);
     }
   } catch (e: any) {
     for (const p of [tmpPath, sidePath]) {
@@ -645,7 +662,7 @@ function swapIn(
         // May not exist.
       }
     }
-    const error = e instanceof SwapAbort ? e.message : `${e.code ?? "error"}: ${e.message}`;
+    const error = e instanceof SwapAbort ? e.message : errText(e);
     return { renamed: false, renameAttempts, carried: Buffer.concat(carried), late: Buffer.alloc(0), notes: [], error };
   }
 }
@@ -664,13 +681,23 @@ function finishSwap(
   carried: Buffer,
   renameAttempts: number,
   show: (p: string) => string,
+  errText: (e: any) => string,
 ): SwapOutcome {
   const notes: string[] = [];
   let late = Buffer.alloc(0);
   if (sidePath) {
     let keep = false;
     try {
-      const size = fs.statSync(sidePath).size;
+      // An append that opened the old file just before the rename can still
+      // land in it just after. Wait until the old file has stopped growing
+      // for longer than one of Claude Code's write bursts before reading it.
+      let size = fs.statSync(sidePath).size;
+      for (let i = 0; i < 8; i++) {
+        sleepSync(SIDE_SETTLE_MS);
+        const now = fs.statSync(sidePath).size;
+        if (now === size) break;
+        size = now;
+      }
       if (size > carriedUpTo) {
         const tail = readRange(sidePath, carriedUpTo, size);
         const end = tail.lastIndexOf(0x0a) + 1;
@@ -689,7 +716,7 @@ function finishSwap(
       }
     } catch (e: any) {
       keep = true;
-      notes.push(`lines written during the rename could not be recovered (${e.message}); the old file is kept at ${show(sidePath)}`);
+      notes.push(`lines written during the rename could not be recovered (${errText(e)}); the old file is kept at ${show(sidePath)}`);
     }
     if (!keep) {
       try {
@@ -842,6 +869,15 @@ function pairBalance(recs: ReadonlyArray<JsonlRecord | null>): NonNullable<Surge
     orphans: orphanUses.length + orphanResults.length,
     tail_orphan_only: tailOrphanOnly,
   };
+}
+
+/**
+ * An error for a message. A filesystem error's own message names the full
+ * path; without expose_paths only its code and call are given.
+ */
+function errorText(e: any, exposePaths: boolean): string {
+  if (!exposePaths && e && typeof e.path === "string") return `${e.code ?? "error"} (${e.syscall ?? "fs"})`;
+  return String(e?.message ?? e);
 }
 
 function countNewlines(buf: Buffer): number {

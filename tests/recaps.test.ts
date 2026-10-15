@@ -105,6 +105,16 @@ describe("isRecapRecord", () => {
     const user = (content: string) => ({ type: "user", message: { role: "user", content } });
     expect(isRecapRecord(user(`Hey. {"sentinel":"${S}","voice":"alice","cut_through_uuid":"c"}`), S)).toBe(true);
   });
+
+  it("a 1.0 recap whose sentinel block does not parse is still a recap at the head of the stack", () => {
+    const s = new Session();
+    const old = s.user(`Hey. Recap.
+{"sentinel":"${S}","id":"alice-recap-001",}`);
+    s.user("hello");
+    const stack = scanRecapStack(s.recs, S);
+    expect(stack.recaps.map((r) => [r.uuid, r.id])).toEqual([[old.uuid, null]]);
+    expect(stack.end).toBe(1);
+  });
 });
 
 describe("the recap stack", () => {

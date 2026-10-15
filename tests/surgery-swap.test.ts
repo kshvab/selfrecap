@@ -235,6 +235,30 @@ describe("surgery: cut, chain, stack", () => {
     expect(records(file)[0]!.uuid).toBe(theirs.uuid);
   });
 
+  it("refuses a cut through the newest message: the conversation must go on after the cut", () => {
+    const dir = tmpDir();
+    const { s, a3 } = alice();
+    const file = s.write(dir);
+    const res = run(file, dir, { cut: a3.uuid, dry_run: true });
+    expect(res.ok).toBe(false);
+    expect(res.reason!).toMatch(/^cut_at_the_end/);
+  });
+
+  it("a 1.0 recap with a broken sentinel block inside the cut range is protected, not silently cut", () => {
+    const dir = tmpDir();
+    const s = new Session();
+    s.user("start");
+    s.user(`Hey. Old recap.
+{"sentinel":"${SENTINEL}","id":"alice-recap-001",}`);
+    const a = s.assistant("noted");
+    s.user("next");
+    s.assistant("ok");
+    const file = s.write(dir);
+    const res = run(file, dir, { cut: a.uuid, id: "alice-recap-001", dry_run: true });
+    expect(res.ok).toBe(false);
+    expect(res.reason!).toMatch(/^cut_range_contains_recap/);
+  });
+
   it("a cut inside the recap stack is refused without pointing at --force", () => {
     const dir = tmpDir();
     const { s, r1 } = alice();
@@ -399,6 +423,14 @@ describe("surgery: cut, chain, stack", () => {
     expect(res.ok, res.reason).toBe(true);
     expect(res.diagnostics.file_path).toBe(path.basename(file));
     expect(path.isAbsolute(res.diagnostics.backup_path!)).toBe(false);
+    // A filesystem error carries its path in its message: it is left out too.
+    const blocker = path.join(dir, "blocker");
+    fs.writeFileSync(blocker, "x");
+    const { s: s2, a1: b1 } = alice();
+    const file2 = s2.write(dir);
+    const failed = run(file2, dir, { cut: b1.uuid, backup_dir: blocker, expose_paths: false });
+    expect(failed.reason!).toMatch(/^backup_failed: E[A-Z]+ \(\w+\)\. Nothing was changed\.$/);
+    expect(failed.reason!).not.toContain(dir);
   });
 });
 

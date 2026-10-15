@@ -40,7 +40,7 @@ export interface RecapPlan {
   /**
    * How much room is left before the old session crosses the ceiling, and how
    * long the body can be. The window between --go and the restart is where
-   * cycles have died: this is the number to write to.
+   * a session can fail to finish the cycle: this is the number to write to.
    */
   headroom: {
     ceiling_percent: number;
@@ -68,7 +68,7 @@ export interface RecapPlan {
     /**
      * Length of that body in characters — what the headroom budget counts.
      * Not bytes: `wc -c` counts bytes, and Cyrillic takes two per character,
-     * so a Ukrainian body looks twice its size to it.
+     * so a body in a non-Latin script looks twice its size to it.
      */
     body_chars: number | null;
   };
@@ -84,15 +84,15 @@ const BODY_RE = /^recap-(\d{3,})\.body\.txt$/;
 
 /** The context window percent_of_1m assumes. */
 const WINDOW_TOKENS = 1_000_000;
-/** The line the old session must not cross before its restart: past it, cycles have died. */
+/** The line the old session must not cross before its restart: past it, the cycle may not finish. */
 const CEILING = 0.97;
 /**
  * Tokens kept for everything the voice does after reading the plan, apart
  * from writing the body: the searches and seam reads, the dry run, --go and
  * the report, plus its own reasoning in between.
  *
- * Measured: a typical cycle's tool output is ~12k tokens and the /remember
- * text ~12k (usually not yet in the plan's reading). A real cycle with an
+ * In practice: a typical cycle's tool output is ~12k tokens and the /remember
+ * text ~12k (usually not yet in the plan's reading). A cycle with an
  * easy seam (one search, one seam read, no backtracking) cost ~24k for the
  * whole protocol. So ~24k is the solid part and the other 16k is the variance
  * term for hard seams, where reasoning over several candidates is what grows.

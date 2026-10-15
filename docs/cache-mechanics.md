@@ -28,7 +28,11 @@ The client re-reads the transcript from disk on session **start / resume** — n
 claude --resume <session-uuid>
 ```
 
-On resume, the client loads the now-rewritten file. The session comes back reading the recap as the opening of its history. This is not a workaround; it is the intended sequence. Surgery writes the file; restart loads it.
+Run it in the session's own folder (`claude --resume` finds sessions by folder), on its own account — the restart command `recap.ts --go` prints does both. On Windows the session can do it itself with `selfrecap restart` (see the README).
+
+On resume, the client loads the now-rewritten file. The session comes back reading its recaps (earlier ones first, the new one last) as the opening of its history. This is not a workaround; it is the intended sequence. Surgery writes the file; restart loads it.
+
+The first turn after the restart costs a little more than usual: the server-side prompt cache matches only an identical prefix, and the start of the conversation just changed, so that turn re-processes the prompt once. Later turns hit the cache again.
 
 A mid-session "reload" is not how the client works. Do not expect to trigger the new state without restarting. Several times during development this was misdiagnosed as a caching bug; it is not a bug, it is the load model.
 
@@ -38,7 +42,7 @@ A mid-session "reload" is not how the client works. Do not expect to trigger the
 
 1. Run the surgery (`--go`). The file is rewritten; a backup is saved.
 2. Fully close the session.
-3. `claude --resume <session-uuid>`.
+3. Run the restart command `--go` printed (in essence `claude --resume <session-uuid>` in the session's folder).
 4. On the first turn after resume, the client is working from the new transcript.
 
 The minimum that reliably works is: close, resume, continue. Extra ceremony (cold-instance warm-ups, multiple restarts) was tried during development and found unnecessary — close-and-resume is sufficient.
@@ -52,7 +56,7 @@ One observation worth passing on, because it surprised every session that went t
 The practical consequence: do not rely on the session's felt sense to confirm a surgery took effect. Verify externally instead:
 
 - the file's modification time on disk,
-- the token count from `GET /context` (a sharp drop means the trim took),
+- the token count from `GET /contexts` (a sharp drop means the trim took, and `stale_reading` clears),
 - and, if you want certainty, read a few records from the backup and confirm that detailed verbatim from the cut period is genuinely gone while the recap's themes are present.
 
 The seamlessness is the design working as intended. It is also a blind spot. Trust the external signals.

@@ -327,10 +327,18 @@ export function checkRestart(session: string, restart: string | undefined): { er
   else if (!/(--resume|-r)\s+\{session_id\}(\s|$)/.test(restart)) {
     errors.push("restart must resume by id: `--resume {session_id}`");
   }
-  if (/(^|\s)(--continue|-c)(\s|$)/.test(restart)) {
+  // Only as arguments to claude: `bash -c` or `pwsh -c` around it are fine.
+  if (/\bclaude\b[^;&|\n]*\s(--continue|-c)(\s|$)/.test(restart)) {
     errors.push("restart must not use --continue: it opens the latest session in the folder, not this one");
   }
   if (/--fork-session/.test(restart)) errors.push("restart must not use --fork-session: it gives the session a new id");
+  if (process.platform === "win32") {
+    // `selfrecap restart` runs the template in Windows PowerShell 5.1, which
+    // has no && or || and whose cd (Set-Location) has no /d. A template it
+    // cannot run would leave the session closed and not resumed.
+    if (/&&|\|\|/.test(restart)) errors.push("restart uses && or ||, which Windows PowerShell 5.1 cannot run: separate the commands with ;");
+    if (/\bcd\s+\/d\b/i.test(restart)) errors.push("restart uses cd /d (cmd syntax); in PowerShell write cd <folder>");
+  }
   if (!/(^|\s)(--name|-n)\s+\S/.test(restart)) {
     warnings.push("restart has no --name: the name then rides only on transcript records, which surgery can cut");
   }

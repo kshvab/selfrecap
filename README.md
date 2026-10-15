@@ -326,8 +326,8 @@ Other fields: `exclude_recap` (default `true`, skips injected recap records), `l
   "matches": [
     {
       "line_index": 1032,
-      "uuid": "8f2de964-0000-0000-0000-000000000000",
-      "parent_uuid": "1387e89b-0000-0000-0000-000000000000",
+      "uuid": "aaaaaaaa-0000-0000-0000-000000000000",
+      "parent_uuid": "bbbbbbbb-0000-0000-0000-000000000000",
       "timestamp": "2026-01-07T10:39:09.219Z",
       "type": "user",
       "role": "user",
@@ -355,7 +355,7 @@ curl -X POST http://127.0.0.1:9090/surgery \
   -H "X-Recap-Token: $(cat ~/.selfrecap/token)" \
   -d '{
     "voice": "my-session",
-    "cut_through_uuid": "8f2de964-0000-0000-0000-000000000000",
+    "cut_through_uuid": "aaaaaaaa-0000-0000-0000-000000000000",
     "recap_content": "Hey. Here is what you wrote so we would have room to keep going... <full recap, ending with the sentinel JSON block>",
     "dry_run": true,
     "force_overwrite_recap": false
@@ -364,7 +364,7 @@ curl -X POST http://127.0.0.1:9090/surgery \
 
 `recap_content` must end with the recap sentinel JSON (default marker `RECAP-CYCLE`); the server rejects the request with a format hint if it is missing. For a voice, the sentinel's `id` must be the next one in the session's recap stack (`<voice>-recap-NNN`; the recap plan names it) and its `voice`, if given, must be this voice. **Always run with `dry_run: true` first** — it computes and returns full diagnostics without touching the file.
 
-Besides the sentinel, the server refuses (400, `ok: false`, a `reason`, and every problem in `diagnostics.problems`) a cut that would split a tool call from its surviving result, cut through the boundary user message itself, delete a recap outside the leading stack (unless `force_overwrite_recap`), or leave the newest message unable to reach the recap through its parent chain. A swap that could not be finished because the file kept changing is 409 (nothing was changed; retry); a backup that could not be written is 500.
+Besides the sentinel, the server refuses (400, `ok: false`, a `reason`, and every problem in `diagnostics.problems`) a cut that would split a tool call from its surviving result, cut through the boundary user message itself, delete a recap outside the leading stack (unless `force_overwrite_recap`), leave the newest message unable to reach the recap through its parent chain, or cut through the newest message itself (`cut_at_the_end`: nothing would be left for the next message to hang off). A swap that could not be finished because the file kept changing is 409 (nothing was changed; retry); a backup that could not be written is 500.
 
 ```json
 {
@@ -378,7 +378,7 @@ Besides the sentinel, the server refuses (400, `ok: false`, a `reason`, and ever
     "cut_through_line_idx": 1032,
     "cut_through_record": { "type": "system/turn_duration", "preview": "" },
     "lines_cut": 1033,
-    "new_recap_uuid": "638dc4c9-0000-0000-0000-000000000000",
+    "new_recap_uuid": "cccccccc-0000-0000-0000-000000000000",
     "sentinel_invariant_passed": true,
     "recap_id": "my-session-recap-001",
     "expected_recap_id": "my-session-recap-001",
@@ -500,7 +500,7 @@ Both are **off unless you set them up**, and both **work on Windows only**. They
 
 They need Claude Code with cross-session messaging (v2.1.224+; native Windows v2.1.234+), and each session started with a name (`claude --name <Name>`, matching the voice's `name`). The registry and the environment variables they read (`CLAUDE_PID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET`) are Claude Code internals, not a documented interface: a Claude Code update can change them, and then both features see no live sessions and do nothing.
 
-**The nudger** (`nudge.enabled: true`). Every few minutes the server reads each voice's context; a live session past `nudge.at` percent gets a message asking it to run `/remember` at its next clean seam and then restart. A session past 95% is told not to recap and to wait for you; one whose recap landed but which was never restarted is told to restart. Each message is carried by a one-shot `claude -p` on a small model (`nudge.model`, default `haiku`) in the session's own account, allowed only the SendMessage tool; it writes nothing. Each courier is an ordinary `claude -p` run, billed to that account like any other. (Anthropic announced in May 2026 moving `claude -p` and Agent SDK usage to a separate monthly credit, then paused that change in June with a promise of notice; check the current terms.)
+**The nudger** (`nudge.enabled: true`). Every few minutes the server reads each voice's context; a live session past `nudge.at` percent gets a message asking it to run `/remember` at its next clean seam and then restart. A session past 95% is told not to recap and to wait for you; one whose recap landed but which was never restarted is told to restart. Each message is carried by a one-shot `claude -p` on a small model (`nudge.model`, default `haiku`) in the session's own account, allowed only the SendMessage tool; it writes nothing. Each courier is an ordinary `claude -p` run, billed to that account like any other. How `claude -p` usage is billed has been subject to change; check your plan's current terms before turning the nudger on.
 
 **`selfrecap restart`** (a voice with a `restart` command). Run by the session itself, from its own shell tool, after `--go`. It does not kill a busy session: a helper in a new console waits for the session's turn to end, closes it, and resumes the same session id with the voice's `restart` command plus a welcome-back first prompt, so the session carries on unattended. It then checks that the session came back (right id, right name, not stuck on a dialog) and records the outcome in `logs/lifecycle.log` (`npx tsx scripts/selfrecap.ts log`) and in `/contexts` `lifecycle`. It acts only on the session that runs it, never on another. Without it, the operator restarts by hand with the command `--go` prints — that is the default ending.
 

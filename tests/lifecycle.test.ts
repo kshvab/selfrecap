@@ -26,7 +26,7 @@ import {
 import { configFor, tmpDir } from "./helpers.js";
 
 const home = os.homedir();
-const other = path.join(home, ".claude-work");
+const other = path.join(home, ".claude-alt");
 const dflt = path.join(home, ".claude");
 
 describe("sessions", () => {

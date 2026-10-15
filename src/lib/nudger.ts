@@ -233,6 +233,7 @@ export function deliver(config: AppConfig, name: string, account: string, text: 
   ];
   return new Promise((resolve) => {
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
     const finish = (ok: boolean, detail: string) => {
       if (settled) return;
       settled = true;
@@ -240,10 +241,21 @@ export function deliver(config: AppConfig, name: string, account: string, text: 
       resolve({ ok, detail });
     };
     let out = "";
-    const p = spawn(claudeBin(), args, { cwd: REPO, env: claudeEnv(account), stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: false });
-    p.stdout.on("data", (d) => (out = (out + d).slice(-400)));
-    p.stderr.on("data", (d) => (out = (out + d).slice(-400)));
-    const timer = setTimeout(() => {
+    const bin = claudeBin();
+    if (!bin) {
+      finish(false, "courier could not start: no claude executable found (the nudger needs claude.exe, or claude on PATH)");
+      return;
+    }
+    let p: ReturnType<typeof spawn>;
+    try {
+      p = spawn(bin, args, { cwd: REPO, env: claudeEnv(account), stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: false });
+    } catch (e: any) {
+      finish(false, `courier could not start: ${e?.message ?? e}`);
+      return;
+    }
+    p.stdout!.on("data", (d) => (out = (out + d).slice(-400)));
+    p.stderr!.on("data", (d) => (out = (out + d).slice(-400)));
+    timer = setTimeout(() => {
       p.kill();
       finish(false, `courier timed out after ${COURIER_TIMEOUT_MS / 1000} s`);
     }, COURIER_TIMEOUT_MS);
@@ -298,6 +310,12 @@ export function startNudger(config: AppConfig, log: { info: (m: string) => void;
         // Overdue and ceiling are failures a human should see, even though the message went out.
         recordLifecycle(d.voice, d.action === "nudge" ? "nudged" : d.action === "overdue" ? "restart_overdue" : "over_ceiling", what);
         log.info(`[nudge] ${ref.name}: ${d.action} delivered (${what})`);
+      }).catch((e) => {
+        // deliver() resolves on every failure it knows; this is the last guard
+        // against an unhandled rejection taking the server down.
+        mem.inFlight.delete(d.voice);
+        mem.last.delete(d.voice);
+        log.warn(`[nudge] ${ref.name}: ${d.action} failed: ${e?.message ?? e}`);
       });
     }
   };

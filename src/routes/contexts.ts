@@ -125,7 +125,8 @@ export function registerContexts(app: FastifyInstance, config: AppConfig) {
           },
         ];
       } catch (e: any) {
-        return [name, { exists: false, error: `read_failed: ${e.message}`, ...base }];
+        const why = !config.expose_paths && typeof e?.path === "string" ? `${e.code ?? "error"} (${e.syscall ?? "fs"})` : e.message;
+        return [name, { exists: false, error: `read_failed: ${why}`, ...base }];
       }
     });
 

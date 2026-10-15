@@ -54,17 +54,20 @@ nudger and `selfrecap restart`.
 - **Surgery refuses more cuts that would hurt the session**: one that splits a
   tool call from its surviving result (`cut_splits_tool_call`), one through a
   user message whose reply survives (`cut_is_user_message`), one that leaves
-  the chain broken (`chain_broken`), a sentinel whose id is not the next in the
+  the chain broken (`chain_broken`), one through the newest message, after
+  which nothing survives for the next message to hang off (`cut_at_the_end`),
+  a sentinel whose id is not the next in the
   voice's stack (`sentinel_id_mismatch`) or whose voice is another
   (`sentinel_voice_mismatch`). An unparseable first survivor is now refused as
   `chain_broken` (was `first_survivor_unparseable`).
 - **Header records** (uuid-less metadata Claude Code writes at the top of a
   file) are kept in place and skipped before the recap stack.
 - **Recaps are recognized structurally**: a user message whose string content
-  carries a sentinel that parses. Text that only quotes the sentinel (a tool
+  carries the sentinel. Text that only quotes the sentinel elsewhere (a tool
   result, assistant text, a task notification) no longer counts, so
   `cut_range_has_existing_recap` no longer fires on routine work. Recaps
-  written without an `id` are still recognized.
+  written without an `id`, or whose sentinel block does not parse, are still
+  recognized; a new body's sentinel must parse.
 - **The swap is safe under a live session**: lines appended during surgery are
   carried into the new file; a half-written line is waited out; the rename is
   retried while another process holds the file; a file that shrank or changed
@@ -85,7 +88,8 @@ nudger and `selfrecap restart`.
 - Existing `config.yaml` files load unchanged. Voice names are now
   case-insensitive and reported lower-case.
 - Existing recaps keep matching: `sentinel_name` works as before, and recaps
-  without ids are still recognized and protected.
+  without ids or with a sentinel block that does not parse are still
+  recognized and protected.
 - Passing both `voice` and `file_path` is now a 400 (it was ambiguous).
 - `/surgery` returns 409 for a swap that could not be finished and 500 for a
   failed backup; refusals stay 400.

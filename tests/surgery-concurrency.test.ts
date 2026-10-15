@@ -174,6 +174,13 @@ describe("carrier fields", () => {
         ...carrier,
         message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] },
       }),
+      JSON.stringify({
+        uuid: "c3",
+        parentUuid: "c2",
+        type: "user",
+        ...carrier,
+        message: { role: "user", content: "next thing" },
+      }),
     ];
     return lines.join("\n") + "\n";
   }

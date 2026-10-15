@@ -228,24 +228,29 @@ export function removeDeadRow(row: LiveSession, pipes: Set<string> | null = list
   return removed;
 }
 
-let binCache: string | undefined;
+let binCache: string | null | undefined;
 
 /**
  * The Claude Code executable. Resolved, not left to PATH: a process
  * manager's PATH (pm2's is frozen when its daemon started) may lack
  * ~/.local/bin, and then a bare `claude` from the server fails with ENOENT.
+ *
+ * On Windows only a real `claude.exe` will do: an npm-installed `claude.cmd`
+ * cannot be spawned without a shell (Node refuses .cmd files with EINVAL),
+ * and the courier's prompt is not something to pass through cmd's quoting.
+ * Null when none is found.
  */
-export function claudeBin(): string {
-  if (binCache) return binCache;
-  const local = path.join(os.homedir(), ".local", "bin", process.platform === "win32" ? "claude.exe" : "claude");
+export function claudeBin(): string | null {
+  if (binCache !== undefined) return binCache;
+  const win = process.platform === "win32";
+  const exe = win ? "claude.exe" : "claude";
+  const local = path.join(os.homedir(), ".local", "bin", exe);
   if (fs.existsSync(local)) return (binCache = local);
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-    for (const name of process.platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"]) {
-      const p = path.join(dir, name);
-      if (dir && fs.existsSync(p)) return (binCache = p);
-    }
+    const p = path.join(dir, exe);
+    if (dir && fs.existsSync(p)) return (binCache = p);
   }
-  return (binCache = "claude");
+  return (binCache = win ? null : "claude");
 }
 
 /**

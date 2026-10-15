@@ -131,6 +131,20 @@ export function launchDetached(commandLine: string, cwd: string): number {
   return Number(m[2]);
 }
 
+/** Why a command line does not parse in Windows PowerShell, or null when it does. */
+export function powershellParseError(commandLine: string): string | null {
+  const script =
+    "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($env:SELFRECAP_CHECK, [ref]$null, [ref]$e); " +
+    "if ($e.Count -gt 0) { $e[0].Message; exit 1 }";
+  const r = spawnSync("powershell", ["-NoProfile", "-Command", script], {
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, SELFRECAP_CHECK: commandLine },
+  });
+  if (r.error) return `could not run PowerShell: ${r.error.message}`;
+  return r.status === 0 ? null : (r.stdout || r.stderr || "parse error").trim().split(/\r?\n/)[0]!;
+}
+
 /** Kill a process and everything under it (MCP servers included). */
 export function killTree(pid: number): { ok: boolean; output: string } {
   const r = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { encoding: "utf8", windowsHide: true });

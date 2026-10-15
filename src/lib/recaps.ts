@@ -8,8 +8,8 @@
  * RECAP-CYCLE) and passed in by every caller, so recaps written with another
  * marker keep matching.
  *
- * A recap RECORD is a `user` record whose content is a plain string ending in
- * a sentinel object that parses — exactly the shape surgery injects. Other
+ * A recap RECORD is a `user` record whose content is a plain string carrying
+ * the sentinel — the shape surgery injects. Other
  * records that mention the sentinel (a tool_result that read a body file, a
  * queue-operation, the /remember skill text in a tool call, assistant text, a
  * sentinel-shaped regex in a message) are not recaps. A user message that
@@ -150,14 +150,16 @@ export const GENERATED_USER_TEXT = /^(<command-|<local-command-|<bash-|<task-not
  * notification quoting a sentinel, or a sentinel-shaped regex in some text, is
  * not a recap: counting one would lock it into the stack for good.
  *
- * An `id` is not required here, so recaps written before ids were checked
- * stay recognized (and so stay protected from the cut).
+ * Neither an `id` nor a sentinel block that parses is required here: 1.0
+ * accepted a body whose sentinel merely appeared in the text (a trailing
+ * comma, a placeholder), and such recaps must stay recognized, and so stay
+ * protected from the cut. New bodies are held to the stricter rule by
+ * surgery, which needs the last sentinel to parse.
  */
 export function isRecapRecord(r: JsonlRecord | null | undefined, sentinelName = DEFAULT_SENTINEL): boolean {
   if (!r || r.type !== "user" || r.isMeta === true) return false;
   const c = r.message?.content;
-  if (typeof c !== "string" || !sentinelRe(sentinelName).test(c) || GENERATED_USER_TEXT.test(c.trimStart())) return false;
-  return parseSentinel(c, sentinelName) !== null;
+  return typeof c === "string" && sentinelRe(sentinelName).test(c) && !GENERATED_USER_TEXT.test(c.trimStart());
 }
 
 /** `my-session-recap-016` → 16. Null when the id carries no recap number. */

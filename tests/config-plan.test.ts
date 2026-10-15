@@ -89,7 +89,7 @@ describe("restart templates", () => {
   const cwd = path.resolve("/work/my-app");
   const folder = cwd.replace(/[^A-Za-z0-9]/g, "-");
   const defaultSession = path.join(os.homedir(), ".claude", "projects", folder, "11111111-1111-4111-8111-111111111111.jsonl");
-  const otherSession = path.join(os.homedir(), ".claude-work", "projects", folder, "11111111-1111-4111-8111-111111111111.jsonl");
+  const otherSession = path.join(os.homedir(), ".claude-alt", "projects", folder, "11111111-1111-4111-8111-111111111111.jsonl");
   const template = `cd ${cwd}; claude --resume {session_id} --name Alice`;
 
   it("restartCommandFor fills {session_id}", () => {
@@ -101,11 +101,20 @@ describe("restart templates", () => {
     expect(checkRestart(defaultSession, template)).toEqual({ errors: [], warnings: [] });
     expect(checkRestart(defaultSession, template.replace("my-app", "other-app")).errors[0]!).toMatch(new RegExp(`belongs to the folder ${folder}`));
     expect(checkRestart(defaultSession, `$env:CLAUDE_CONFIG_DIR='x'; ${template}`).errors[0]!).toMatch(/default ~\/\.claude account/);
-    expect(checkRestart(otherSession, template).warnings.some((w) => /\.claude-work account/.test(w))).toBe(true);
+    expect(checkRestart(otherSession, template).warnings.some((w) => /\.claude-alt account/.test(w))).toBe(true);
     expect(checkRestart(otherSession, `$env:CLAUDE_CONFIG_DIR='x'; ${template}`).warnings).toEqual([]);
     expect(checkRestart(defaultSession, undefined).errors[0]!).toMatch(/^no restart command/);
     expect(checkRestart(defaultSession, template.replace("{session_id}", "abc")).errors[0]!).toMatch(/no \{session_id\}/);
     expect(checkRestart(defaultSession, "claude --resume {session_id} --name Alice").warnings.some((w) => /does not cd/.test(w))).toBe(true);
+  });
+
+  it("-c belongs to claude only: a shell's -c around the command is fine", () => {
+    expect(checkRestart(defaultSession, `bash -c 'cd ${cwd}; claude --resume {session_id} --name Alice'`).errors).toEqual([]);
+  });
+
+  it.skipIf(process.platform !== "win32")("on Windows, refuses what Windows PowerShell cannot run: && and cd /d", () => {
+    expect(checkRestart(defaultSession, `cd ${cwd} && claude --resume {session_id} --name Alice`).errors.some((e) => /&&/.test(e))).toBe(true);
+    expect(checkRestart(defaultSession, `cd /d ${cwd}; claude --resume {session_id} --name Alice`).errors.some((e) => /cd \/d/.test(e))).toBe(true);
   });
 
   it("resume by explicit id only, never by name or --continue; --name is expected", () => {
@@ -254,7 +263,7 @@ describe("recap plan", () => {
   it("counts a written body in characters, not bytes (Cyrillic is two bytes each)", () => {
     const { home, cfg } = voiceSetup(["alice-recap-001"]);
     fs.writeFileSync(path.join(home, "recap-001.body.txt"), "x");
-    const body = "Привіт, Алісо. Це оператор. ".repeat(10);
+    const body = "Γεια σου, Αλίκη. Привет. ".repeat(10);
     fs.writeFileSync(path.join(home, "recap-002.body.txt"), body);
     const plan = buildRecapPlan(cfg, "alice");
     expect(plan.next.body_exists).toBe(true);

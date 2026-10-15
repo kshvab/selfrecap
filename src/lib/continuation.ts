@@ -9,7 +9,8 @@
  *
  * The old file stops growing. Anything still pointing at it reports the
  * context the session had at the moment it was continued — not its live
- * state. A dashboard can read 28% for days while the live session sits at 67%.
+ * state. A dashboard can show a frozen, too-low reading for days while the
+ * live session keeps growing.
  *
  * This resolver walks that chain forward from the configured anchor to the
  * live file. It is deliberately conservative: it only follows a hop when the

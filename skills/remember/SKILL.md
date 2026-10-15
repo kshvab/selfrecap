@@ -48,7 +48,7 @@ npx tsx scripts/recap.ts <your-voice> --plan
 
 The plan is everything the server knows about you: your context, your headroom, your session, your recap stack, your next recap id, the exact path for your body file, the sentinel values to copy, the search cutoff Step 3 uses, your memories folder, and the command that restarts you. Keep it at hand; the steps below refer to it. Note the Context line: those are your starting numbers for the final report.
 
-**The Headroom line is the number to write to.** Surgery happens on disk; your running session keeps growing until it restarts, and cycles have died when it crossed 97% between writing the body and the restart. Headroom is what is left before 97%, minus 40k tokens kept for everything else this protocol costs (the searches and seam reads, the dry run, `--go`, your report, your reasoning in between). The body budget in characters is counted low on purpose. Write under it.
+**The Headroom line is the number to write to.** Surgery happens on disk; your running session keeps growing until it restarts, and a session that crosses 97% between writing the body and the restart can fail to finish the cycle. Headroom is what is left before 97%, minus 40k tokens kept for everything else this protocol costs (the searches and seam reads, the dry run, `--go`, your report, your reasoning in between). The body budget in characters is counted low on purpose. Write under it.
 
 If the plan prints warnings, read them. A warning about your session, your recaps folder or your restart command is a config problem: tell the operator before going further. If the command answers `HTTP 404` or `no recap-plan route`, the server is older than this skill: stop and tell the operator.
 
@@ -111,7 +111,7 @@ This deltas discipline is load-bearing. A recap-002 that re-introduces what reca
 
 ## Step 3 — Find your cut point
 
-The cut point is the record the conversation stood on when the user message that opens a new arc arrived: that message's `parent_uuid`. It is usually a `system` record written after your last reply (turn_duration, stop_hook_summary, away_summary), sometimes your `assistant` `end_turn` itself. It must be a real phase transition, not an arbitrary percentage target. The server re-links everything after the cut to your recap, and refuses a cut that would split a tool call, cut the boundary message itself, or leave the conversation unable to reach your recap — so a wrong pick costs a retry, never a broken session.
+The cut point is the record the conversation stood on when the user message that opens a new arc arrived: that message's `parent_uuid`. It is usually a `system` record written after your last reply (turn_duration, stop_hook_summary, away_summary), sometimes your `assistant` `end_turn` itself. It must be a real phase transition, not an arbitrary percentage target. The server re-links everything after the cut to your recap, and refuses a cut that would split a tool call, cut the boundary message itself, cut through your newest message, or leave the conversation unable to reach your recap — so a wrong pick costs a retry, never a broken session.
 
 What counts as a phase transition varies by shape:
 

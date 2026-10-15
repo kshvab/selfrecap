@@ -58,7 +58,7 @@ When `/surgery` injects a recap, the new record is a `user` message whose conten
 
 ### What counts as a recap
 
-A **recap record** is a `user` record (not `isMeta`) whose content is a plain string carrying a sentinel object that parses as JSON with `"sentinel": "<sentinel_name>"`. When a body contains several sentinel objects (quoting a predecessor, say), the **last** one counts; if that last one does not parse, the body has no sentinel (it never falls back to the quoted one).
+A **recap record** is a `user` record (not `isMeta`) whose content is a plain string carrying `"sentinel": "<sentinel_name>"` (any spacing). Recognition does not require the block to parse, so recaps written by 1.0 with a slightly broken block stay recognized and protected. A **new** body is held to more: its sentinel must parse as JSON. When a body contains several sentinel objects (quoting a predecessor, say), the **last** one counts; if that last one does not parse, the body has no sentinel (it never falls back to the quoted one).
 
 Not recaps, even when they contain the sentinel text: a `tool_result` that read a body file, assistant text, a `queue-operation`, text Claude Code generates itself (slash-command echoes, task notifications, interrupt markers), or a sentinel-shaped string that is not a JSON object. Before 1.1 any record whose text contained the sentinel counted, which made the overwrite guard fire on routine work.
 
@@ -121,6 +121,8 @@ A recap record **outside** the stack inside the cut range (an older recap that e
 ### Chain repair
 
 Claude Code rebuilds a resumed session by walking `parentUuid` back from the last message. After the cut, every surviving record whose parent was in the cut range is re-pointed to the new recap (`repointed_records`), and the server walks the chain itself: `chain_reaches_recap` must be true, or the surgery is refused with `chain_broken` and the `chain_break` that stopped the walk. (Before 1.1 only the next *line* was re-pointed; when that line was a metadata record, the resumed session never reached its recaps.)
+
+A cut through the newest message is refused too (`cut_at_the_end`): the next record Claude Code writes would hang off a record that is gone.
 
 The server also refuses a cut that removes the `tool_use` of a `tool_result` that survives (`cut_splits_tool_call`; cut at the end of a turn instead) and a cut through a user message whose reply survives (`cut_is_user_message`: the message that opens your new arc would be lost — cut through its parent instead).
 

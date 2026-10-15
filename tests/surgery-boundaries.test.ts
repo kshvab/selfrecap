@@ -123,9 +123,10 @@ describe("surgery boundaries", () => {
       sentinel_name: SENTINEL,
       dry_run: true,
     });
-    // Cut consumes the only record; new recap becomes the single survivor.
-    expect(res.ok).toBe(true);
-    expect(res.diagnostics.total_lines_after).toBe(1);
+    // Cutting the only record would leave nothing after the recap for the
+    // next message to hang off: refused, without a crash.
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/^cut_at_the_end/);
   });
 
   it("all-records-are-recaps file -> cut inside leading recaps is rejected", async () => {
