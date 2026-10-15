@@ -25,25 +25,37 @@ Useful scripts (see `package.json`):
 - `npm test` — run the test suite (Vitest)
 - `npm run test:watch` — tests in watch mode
 - `npm run build` — compile to `dist/`
+- `npm run check-config` — validate `config.yaml`
 
 ## Project layout
 
 ```
 src/
-  server.ts            Fastify app, route registration, /health and /voices
-  config.ts            config.yaml loader + path resolution
+  server.ts            Fastify app, security hook, route registration, /health and /voices
+  config.ts            config.yaml loader, path resolution + allowed_roots guard, restart checks
+  version.ts
   routes/              one file per HTTP route
-    find-cut-point.ts
-    context.ts
-    contexts.ts
-    surgery.ts
+    find-cut-point.ts  context.ts  contexts.ts  recap-plan.ts  records.ts  lifecycle.ts  surgery.ts
   lib/                 the engine
-    jsonl.ts           record parsing, text extraction, sentinel detection
-    finder.ts          cut-point search algorithms
+    jsonl.ts           record parsing (and exact-bytes reading for surgery), text extraction
+    recaps.ts          the one definition of a recap: sentinel parsing, the recap stack, numbering
+    finder.ts          cut-point search algorithms, records around a line
     monitor.ts         context-size computation
-    surgery.ts         cut + inject + repair, the safety invariants
+    continuation.ts    following continued-in markers to the live session file
+    recap-plan.ts      the recap plan and headroom
+    surgery.ts         cut + inject + re-parent, the safety checks, the swap under a live session
+    backups.ts         verified backups and their rotation
+    fsutil.ts          durable writes, range reads
+    sessions.ts        Claude Code's live-session registry (Windows liveness)
+    lifecycle.ts       process handling for selfrecap restart (Windows)
+    lifecycle-log.ts   nudge/restart events
+    nudger.ts          the context nudge (Windows, opt-in)
+    account-usage.ts   plan-usage bars (opt-in)
 scripts/
-  recap.ts             CLI wrapper around POST /surgery
+  recap.ts             the CLI a session drives the recap cycle with
+  selfrecap.ts         selfrecap restart / log (Windows)
+  check-config.ts      validate config.yaml
+  install-skill.ts     install the /remember skill into each account
 tests/                 Vitest tests + JSONL fixtures
 docs/                  protocol, walkthrough, and field-note guides
 ```
@@ -64,7 +76,7 @@ docs/                  protocol, walkthrough, and field-note guides
 npm test
 ```
 
-The suite runs against hand-crafted JSONL fixtures in `tests/`. When you touch `lib/surgery.ts` or `lib/finder.ts`, add cases that pin the behavior — especially the safety invariants (cut target must exist, sentinel required, prior recaps preserved, pair balance, path-allowlist rejection). For a file-mutation tool, regression coverage is the price of admission for changes to the engine.
+The suite runs against hand-crafted JSONL fixtures in `tests/`. When you touch `lib/surgery.ts` or `lib/finder.ts`, add cases that pin the behavior — especially the safety invariants (cut target must exist, sentinel required, prior recaps preserved, chain reaches the recap, no split tool call, pair balance, path-allowlist rejection) and the swap under a live session (the `hooks` test seams in `SurgeryRequest`). For a file-mutation tool, regression coverage is the price of admission for changes to the engine.
 
 ## Pull request conventions
 

@@ -17,7 +17,7 @@ The intended deployment is a single user running the server on their own machine
 
 ### 1. Loopback only
 
-The server binds `127.0.0.1` by default (`server.host` in `config.yaml`). It is not meant to be reachable from other machines. Do **not** change the bind address to `0.0.0.0` or a LAN IP without first adding TLS and a real authentication layer — neither of which ships in v1.0.0.
+The server binds `127.0.0.1` by default (`server.host` in `config.yaml`). It is not meant to be reachable from other machines. Do **not** change the bind address to `0.0.0.0` or a LAN IP without first adding TLS and a real authentication layer — neither of which ships with this tool.
 
 ### 2. Path allowlist (`allowed_roots`)
 
@@ -53,13 +53,20 @@ The hardening layer for POST routes is:
 Operationally, surgery is hard to get wrong destructively:
 
 - **Dry-run first.** `dry_run: true` computes the full diagnostics (lines cut, pair balance, recap detection) and returns them without touching the file. This is the recommended first call every time.
-- **Backup before mutation.** A timestamped copy of the target file is written to `backup_dir` before any write. If the backup fails, surgery aborts.
-- **Atomic write with rollback.** The new file is written to a temp path and renamed into place. If the write fails, the original is restored from the backup.
-- **Invariant enforcement.** The cut target must exist, `recap_content` must carry the sentinel marker, and prior recaps in the cut range are preserved unless explicitly overridden with `force_overwrite_recap`.
+- **Verified backup before mutation.** A timestamped copy of the target file is written to `backup_dir`, fsynced, and read back and compared before any write. If the backup fails, surgery aborts and nothing is changed. Older backups are compressed, never deleted.
+- **Atomic, checked swap.** The new file is written beside the live one and renamed into place. Before the rename the live file is checked byte for byte up to the point surgery read; if it shrank or changed there, nothing is swapped. Lines the live session appended meanwhile are carried into the new file. The live file is never "restored" from the older backup, which would erase what the session wrote since.
+- **Invariant enforcement.** The cut target must exist, `recap_content` must carry the sentinel marker, prior recaps in the cut range are preserved unless explicitly overridden with `force_overwrite_recap`, no tool call may be split, and the resulting parent chain must reach the new recap.
 
 ### 6. Path exposure off by default
 
 `expose_paths: false` (the default) strips filesystem paths from `/voices`, `/contexts`, and surgery diagnostics, so a misconfigured public clone cannot leak your directory layout. Set it `true` only for a trusted local dashboard.
+
+### 7. Optional features that reach beyond the transcripts
+
+Both are off by default and documented in the README.
+
+- **Plan-usage bars (`usage.enabled`).** The server reads each Claude Code account's OAuth access token from `<account>/.credentials.json` and sends it to `https://api.anthropic.com/api/oauth/usage` (where Claude Code itself sends it). It never logs, returns, stores or refreshes the token. Turning this on means trusting this server with read access to your login token; leave it off if that is not acceptable.
+- **Nudger and `selfrecap restart` (Windows).** The nudger starts short-lived `claude -p` processes in your accounts, allowed only the SendMessage tool, to deliver a fixed text. `selfrecap restart` kills the process tree of the session that ran it (and only that one, identified by Claude Code's own environment and session registry) and resumes it with the voice's configured `restart` command, run through PowerShell. That command comes from your `config.yaml`: keep the file writable only by you.
 
 ## Operator responsibilities
 

@@ -3,6 +3,8 @@
 #   cp config.example.yaml config.yaml
 #
 # config.yaml is git-ignored, so your real paths never get committed.
+# Read once at startup: after editing, run `npm run check-config`, then
+# restart the server.
 
 server:
   port: 9090
@@ -13,15 +15,32 @@ server:
 # A "voice" is just a short, memorable name for one of your Claude Code
 # sessions. The term reflects this tool's origin — identity-preserving recaps
 # for long-lived AI personas, where each session is a recognizable voice. Call
-# them whatever you like (project-a, my-session, agent-1).
+# them whatever you like (project-a, my-session, agent-1). Names are
+# case-insensitive.
 #
-# The `path` is the absolute path to that session's JSONL transcript file.
+#   session  the session's JSONL transcript (`path` is accepted too, its 1.0 name).
+#            An anchor: when Claude Code continues a session into a new file,
+#            the server follows the chain to the live file by itself.
+#   recaps   optional: the folder where the session writes its recap bodies
+#            (recap-001.body.txt, recap-002.body.txt, ...). The recap plan
+#            gives the session the exact path of its next body.
+#   home     optional: the session's own folder; memory files live in
+#            <home>/memories. `recaps` defaults to `home`.
+#   restart  optional: the command that resumes the session after surgery.
+#            {session_id} becomes the LIVE session id. Resume by id only
+#            (`--resume {session_id}`, never --continue), and give --name.
+#            `recap.ts --go` prints it for the operator; on Windows,
+#            `selfrecap restart` runs exactly this (see README).
+#   name     optional: the name the session answers to (`claude --name`).
+#            Defaults to the key, capitalized. The nudger and
+#            `selfrecap restart` find live sessions by it.
 #
 # HOW TO FIND YOUR SESSION JSONL:
 #   Claude Code stores each session at:
 #     ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
-#   where <encoded-cwd> is the session's working directory with path
-#   separators replaced by dashes. You need the <session-uuid>.
+#   where <encoded-cwd> is the session's working directory with every
+#   character that is not a letter or digit replaced by a dash. You need the
+#   <session-uuid>.
 #
 #   Easiest: when you stop a Claude Code session (Ctrl+C or /exit), it prints
 #   the session id + resume command under the closed chat. That id is the
@@ -37,16 +56,22 @@ server:
 #
 # Pick a MEANINGFUL voice name (api-refactor, research-agent) so you can tell
 # sessions apart at a glance in /contexts. Names are arbitrary to the tool.
-# You can also skip the voice map and pass `file_path` directly in any request.
+# /surgery and /find-cut-point also take `file_path` instead of `voice`, to
+# work on an exact file; /context?path= does the same for readings.
 
 voices:
   # macOS / Linux example:
   my-session:
-    path: "/Users/you/.claude/projects/-Users-you-projects-my-app/00000000-0000-0000-0000-000000000000.jsonl"
+    session: "~/.claude/projects/-Users-you-projects-my-app/00000000-0000-0000-0000-000000000000.jsonl"
+    recaps: "~/selfrecap-voices/my-session"
+    restart: "cd ~/projects/my-app && claude --resume {session_id} --name My-session"
 
-  # Windows example:
+  # Windows example (the restart command runs in PowerShell):
   another-session:
-    path: "C:/Users/you/.claude/projects/C--Users-you-projects-my-app/11111111-1111-1111-1111-111111111111.jsonl"
+    session: "C:/Users/you/.claude/projects/C--Users-you-projects-my-app/11111111-1111-1111-1111-111111111111.jsonl"
+    home: "C:/Users/you/selfrecap-voices/another-session"
+    restart: 'cd C:\Users\you\projects\my-app; claude --resume {session_id} --name Researcher'
+    name: Researcher
 
 # ─── Security ────────────────────────────────────────────────────────────────
 #
@@ -56,13 +81,16 @@ voices:
 # localhost (don't, without adding TLS + real auth).
 
 # Only files resolving (after symlink resolution) under one of these roots may
-# be read or written. Leave as-is unless your sessions live elsewhere.
+# be read or written. Leave as-is unless your sessions live elsewhere (another
+# Claude Code account folder, for instance: add its projects/ folder here).
 allowed_roots:
   - "~/.claude/projects/"
 
-# When false (default), filesystem paths are stripped from /voices, /contexts,
-# and surgery diagnostics responses — so a misconfigured public clone can't leak
-# your home directory layout. Set true only on a trusted local dashboard.
+# When false (default), filesystem paths are cut to their base names in /voices,
+# /contexts, /context, the recap plan's session paths and surgery diagnostics —
+# so a misconfigured public clone can't leak your home directory layout. Set
+# true only on a trusted local dashboard. (The recap plan always carries the
+# body path: the session needs it to write its recap.)
 expose_paths: false
 
 # ─── Recap sentinel ──────────────────────────────────────────────────────────
@@ -75,6 +103,44 @@ sentinel_name: "RECAP-CYCLE"
 
 # ─── Backups ─────────────────────────────────────────────────────────────────
 #
-# /surgery writes a timestamped backup of the target file here before any
-# cut-and-inject. Restore from here if a surgery goes wrong.
+# /surgery writes a verified backup of the target file before any
+# cut-and-inject: <backup_dir>/<voice>/<voice>-<session-id>-pre-surgery-<ts>.jsonl
+# (flat in backup_dir for a direct file_path). The newest three per voice stay
+# raw, older ones are gzipped; nothing is deleted. Restore from here if a
+# surgery goes wrong.
 backup_dir: "./backups"
+
+# ─── Claude Code accounts ────────────────────────────────────────────────────
+#
+# The Claude Code config folders (CLAUDE_CONFIG_DIR) to look in for live
+# sessions and plan usage. The accounts your voices' sessions live in are
+# added automatically. Most people have one: ~/.claude.
+accounts:
+  - "~/.claude"
+
+# ─── Context nudge (Windows only, off by default) ───────────────────────────
+#
+# A live session past `at` percent of its context window gets a message:
+# recap (/remember) and restart. Checked every `every_minutes`, at most once
+# per `cooldown_minutes` per voice, only to sessions that are running and
+# named (`name` above / `claude --name`). The message travels by courier: a
+# one-shot `claude -p` on `model`, in the session's own account, which carries
+# a fixed text with SendMessage. Needs Claude Code with cross-session
+# messaging (v2.1.224+, native Windows v2.1.234+). Windows only: liveness is
+# read from Claude Code's Windows named pipes (see README).
+nudge:
+  enabled: false
+  at: 83
+  every_minutes: 5
+  cooldown_minutes: 10
+  model: haiku
+
+# ─── Plan-usage bars (off by default) ────────────────────────────────────────
+#
+# When on, /contexts adds `account_usage`: the bars Claude Code's /usage shows
+# (session, week, per model) for each account. To get them the server READS
+# each account's login token from <account>/.credentials.json and calls an
+# undocumented Anthropic endpoint with it; it never refreshes the token. The
+# endpoint may change or stop answering without notice. See README.
+usage:
+  enabled: false
