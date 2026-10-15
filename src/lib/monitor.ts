@@ -12,7 +12,7 @@
  */
 
 import fs from "fs";
-import { loadJsonl } from "./jsonl.js";
+import { loadJsonl, type JsonlRecord } from "./jsonl.js";
 
 export interface ContextReading {
   voice?: string;
@@ -27,12 +27,15 @@ export interface ContextReading {
   line_count: number;
   last_usage_ts: string | null;
   last_usage_line_idx: number;
+  /** `sessionId` on the record the reading came from: lets a caller prove the reading is the session it asked for. */
+  session_id: string | null;
 }
 
-export function readContextSize(filePath: string, voice?: string): ContextReading | null {
+/** `records`, when given, are this file's already-loaded records (saves a second read of a large file). */
+export function readContextSize(filePath: string, voice?: string, records?: JsonlRecord[]): ContextReading | null {
   if (!fs.existsSync(filePath)) return null;
   const stats = fs.statSync(filePath);
-  const records = loadJsonl(filePath);
+  records ??= loadJsonl(filePath);
 
   for (let i = records.length - 1; i >= 0; i--) {
     const r = records[i];
@@ -61,6 +64,7 @@ export function readContextSize(filePath: string, voice?: string): ContextReadin
       line_count: records.length,
       last_usage_ts: r.timestamp ?? null,
       last_usage_line_idx: i,
+      session_id: typeof r.sessionId === "string" ? r.sessionId : null,
     };
   }
 
@@ -78,5 +82,6 @@ export function readContextSize(filePath: string, voice?: string): ContextReadin
     line_count: records.length,
     last_usage_ts: null,
     last_usage_line_idx: -1,
+    session_id: null,
   };
 }

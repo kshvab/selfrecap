@@ -7,7 +7,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "fs";
 import { performSurgery } from "../src/lib/surgery.js";
-import { loadJsonl, isRecapMessage } from "../src/lib/jsonl.js";
+import { loadJsonl } from "../src/lib/jsonl.js";
+import { isRecapRecord } from "../src/lib/recaps.js";
 import {
   FIXTURE_PATH,
   SENTINEL,
@@ -152,7 +153,8 @@ describe("surgery invariants (real)", () => {
     // the library uses (getRecordText, not raw JSON which escapes the quotes).
     let count = 0;
     for (const r of out) {
-      if (isRecapMessage(r, SENTINEL)) count++;
+      if (!r.uuid) continue;
+      if (isRecapRecord(r, SENTINEL)) count++;
       else break;
     }
     expect(count).toBe(leadingBefore + 1);

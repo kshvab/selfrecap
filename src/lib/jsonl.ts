@@ -35,8 +35,10 @@ export interface JsonlRecord {
 }
 
 /**
- * Load a JSONL file and parse each line. Lines that fail to parse are skipped
- * silently (the file may be mid-write or contain partial records).
+ * Load a JSONL file and parse each line, for read-only callers (monitor,
+ * finder, planner). A line that fails to parse becomes an empty `{}`
+ * placeholder so indices stay aligned with file lines. Never write these
+ * records back: surgery reads with readSessionBytes and keeps raw bytes.
  */
 export function loadJsonl(filePath: string): JsonlRecord[] {
   const raw = fs.readFileSync(filePath, "utf8").trim();
@@ -50,49 +52,49 @@ export function loadJsonl(filePath: string): JsonlRecord[] {
   });
 }
 
-/**
- * Load file as raw lines (string array) — useful when callers need both
- * the parsed objects and the original line strings.
- */
-export function loadJsonlLines(filePath: string): string[] {
-  const raw = fs.readFileSync(filePath, "utf8").trim();
-  if (!raw) return [];
-  return raw.split("\n");
+/** One complete line of a session file: its exact bytes and, if it parses, the record. */
+export interface SessionLine {
+  raw: Buffer;
+  rec: JsonlRecord | null;
+}
+
+export interface SessionBytes {
+  /** Every byte read, including a trailing line Claude Code may still be writing. */
+  buf: Buffer;
+  /** Bytes up to and including the last newline: the complete lines. */
+  completeLength: number;
+  lines: SessionLine[];
 }
 
 /**
- * Load a JSONL file ONCE and return both the parsed records AND the original
- * raw line strings, index-aligned (rawLines[i] is the source text of
- * records[i]). Parsing uses the same `{}`-on-failure behavior as loadJsonl
- * (fine for analysis), but the raw lines let callers write survivor records
- * back byte-for-byte instead of re-serializing a possibly-empty `{}` parse.
- *
- * Single read of the file is what guarantees the two arrays stay aligned —
- * do NOT reconstruct this by calling loadJsonl + loadJsonlLines separately.
+ * Read a session file for surgery: one read, complete lines only, bytes kept
+ * exactly. A line that does not parse keeps its bytes and gets `rec: null`;
+ * a trailing partial line is left out of `lines` (it is still being written).
  */
-export function loadJsonlWithRaw(filePath: string): {
-  records: JsonlRecord[];
-  rawLines: string[];
-  eol: string;
-} {
-  const raw = fs.readFileSync(filePath, "utf8").trim();
-  if (!raw) return { records: [], rawLines: [], eol: "\n" };
-  // Detect the file's dominant line ending so the surgery write path can join
-  // verbatim survivors and re-serialized lines (new recap, repointed first
-  // survivor) with ONE consistent ending — never a \r\n / \n mix. We split on
-  // /\r?\n/ so rawLines never carry a trailing \r (the terminator isn't content).
-  // Real CC transcripts are LF-only; this guards a CRLF file that a stranger's
-  // editor or git autocrlf could produce.
-  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
-  const rawLines = raw.split(/\r?\n/);
-  const records = rawLines.map((line) => {
-    try {
-      return JSON.parse(line) as JsonlRecord;
-    } catch {
-      return {} as JsonlRecord;
-    }
-  });
-  return { records, rawLines, eol };
+export function readSessionBytes(filePath: string): SessionBytes {
+  const buf = fs.readFileSync(filePath);
+  const completeLength = buf.lastIndexOf(0x0a) + 1;
+  const lines: SessionLine[] = [];
+  let start = 0;
+  while (start < completeLength) {
+    const nl = buf.indexOf(0x0a, start);
+    const raw = buf.subarray(start, nl);
+    lines.push({ raw, rec: parseLine(raw) });
+    start = nl + 1;
+  }
+  return { buf, completeLength, lines };
+}
+
+function parseLine(raw: Buffer): JsonlRecord | null {
+  if (raw.length === 0) return null;
+  let text = raw.toString("utf8");
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  try {
+    const v = JSON.parse(text);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as JsonlRecord) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -136,21 +138,6 @@ export function getRecordText(o: JsonlRecord): string {
 }
 
 /**
- * Detect recap injection messages. All recaps contain the JSON sentinel
- * `"sentinel":"<NAME>"` (with or without space after colon) in their content.
- * The marker name is configurable (config.sentinel_name) and threaded in by
- * callers so existing recaps authored with a different marker still match.
- *
- * exclude_recap=true callers use this to skip recap messages during search,
- * preventing recap content from polluting cut-point lookups.
- */
-export function isRecapMessage(o: JsonlRecord, sentinelName: string): boolean {
-  const text = getRecordText(o);
-  return text.includes(`"sentinel":"${sentinelName}"`) ||
-         text.includes(`"sentinel": "${sentinelName}"`);
-}
-
-/**
  * Build a compact summary of a record for response payloads.
  * Used in cut-point matches and surrounding context windows.
  */
@@ -160,6 +147,10 @@ export interface RecordSummary {
   parent_uuid: string | null;
   timestamp: string | null;
   type: string | null;
+  /** For system records: turn_duration, stop_hook_summary, away_summary, ... */
+  subtype: string | null;
+  /** A user record carrying tool output rather than a typed message. */
+  is_tool_result: boolean;
   role: string | null;
   content_preview: string;
   /**
@@ -185,6 +176,8 @@ export function recordSummary(
     parent_uuid: o.parentUuid ?? null,
     timestamp: o.timestamp ?? null,
     type: o.type ?? null,
+    subtype: o.subtype ?? null,
+    is_tool_result: Array.isArray(o.message?.content) && o.message!.content.some((b: any) => b?.type === "tool_result"),
     role: o.message?.role ?? null,
     content_preview: text.slice(0, previewChars).replace(/\n/g, " ").trim(),
     selectable: hasUuid,

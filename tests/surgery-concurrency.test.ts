@@ -1,17 +1,19 @@
 /**
  * Concurrency + safety tests for the file-mutation core.
  *
- * Covers the P1-A hardening:
- *   - per-path mutex serializes concurrent surgeries on the same file (no lost-update)
- *   - mtime re-check aborts when the file changes on disk mid-surgery
- *   - carrier fields are COPIED from a sample record (not hardcoded defaults)
+ *   - two surgeries on the same file never interleave (surgery is synchronous
+ *     from read to rename), so neither update is lost
+ *   - lines appended to the file mid-surgery are carried into the result,
+ *     never clobbered
+ *   - carrier fields are COPIED from the session's records (not hardcoded defaults)
  *   - fail-loud when a required carrier field is absent from every record
  */
 
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "fs";
 import { performSurgery } from "../src/lib/surgery.js";
-import { loadJsonl, isRecapMessage } from "../src/lib/jsonl.js";
+import { loadJsonl } from "../src/lib/jsonl.js";
+import { isRecapRecord } from "../src/lib/recaps.js";
 import {
   SENTINEL,
   makeWorkspace,
@@ -35,21 +37,16 @@ function track(w: TempWorkspace): TempWorkspace {
   return w;
 }
 
-describe("per-path mutex", () => {
-  it("serializes two concurrent surgeries on the same file (both complete, no lost-update)", async () => {
+describe("same-file surgeries", () => {
+  it("two surgeries fired together on the same file both land (no lost update)", async () => {
     const w = track(makeWorkspace());
 
-    // Fire two real surgeries concurrently on the SAME file. The first cuts
+    // Fire two real surgeries together on the SAME file. The first cuts
     // through sess-uuid-10; the second cuts through sess-uuid-20 (still present
-    // after the first cut, since survivors start at sess-uuid-11). With the
-    // mutex, the second runs only after the first commits and reloads fresh
-    // state — so BOTH succeed. Without serialization, one write would clobber
-    // the other (lost update) and only one recap would survive.
-    //
-    // A real yield point is forced inside each critical section (the awaited
-    // beforeWrite hook) so that, absent the mutex, both surgeries would load the
-    // ORIGINAL file, both pause, then both write — losing one update. The mutex
-    // must prevent the second from even loading until the first releases.
+    // after the first cut, since survivors start at sess-uuid-11). Surgery is
+    // synchronous from its read to its rename, so the second reads the file
+    // the first wrote — and BOTH succeed. Were they to interleave, one write
+    // would clobber the other and only one recap would survive.
     const [a, b] = await Promise.all([
       performSurgery({
         file_path: w.filePath,
@@ -57,7 +54,6 @@ describe("per-path mutex", () => {
         recap_content: RECAP_BODY("recap-A"),
         backup_dir: w.backupDir,
         sentinel_name: SENTINEL,
-        __beforeWriteHook: () => new Promise((res) => setTimeout(res, 25)),
       }),
       performSurgery({
         file_path: w.filePath,
@@ -65,7 +61,6 @@ describe("per-path mutex", () => {
         recap_content: RECAP_BODY("recap-B"),
         backup_dir: w.backupDir,
         sentinel_name: SENTINEL,
-        __beforeWriteHook: () => new Promise((res) => setTimeout(res, 25)),
       }),
     ]);
 
@@ -88,13 +83,14 @@ describe("per-path mutex", () => {
     // Final file's leading recaps: original 1 + two injected = 3.
     let leading = 0;
     for (const r of out) {
-      if (isRecapMessage(r, SENTINEL)) leading++;
+      if (!r.uuid) continue;
+      if (isRecapRecord(r, SENTINEL)) leading++;
       else break;
     }
     expect(leading).toBe(3);
   });
 
-  it("surgeries on DIFFERENT files run without serializing into each other", async () => {
+  it("surgeries on DIFFERENT files do not affect each other", async () => {
     const w1 = track(makeWorkspace());
     const w2 = track(makeWorkspace());
     const [a, b] = await Promise.all([
@@ -118,10 +114,11 @@ describe("per-path mutex", () => {
   });
 });
 
-describe("mtime re-check", () => {
-  it("aborts with concurrent_modification if the file changes on disk mid-surgery", async () => {
+describe("a writer appending mid-surgery", () => {
+  it("has its lines carried into the result, never clobbered", async () => {
     const w = track(makeWorkspace());
-    const before = fs.readFileSync(w.filePath, "utf8");
+    const appended =
+      JSON.stringify({ uuid: "late-1", parentUuid: "sess-uuid-29", type: "user", message: { role: "user", content: "late line" } }) + "\n";
 
     const res = await performSurgery({
       file_path: w.filePath,
@@ -129,21 +126,14 @@ describe("mtime re-check", () => {
       recap_content: RECAP_BODY("recap-mt"),
       backup_dir: w.backupDir,
       sentinel_name: SENTINEL,
-      // Simulate an external writer (e.g. CC appending to the live session)
-      // touching the file after surgery loaded it but before it writes. The
-      // mtime guard must detect the change and refuse to clobber it.
-      __beforeWriteHook: () => {
-        const future = new Date(Date.now() + 60_000);
-        fs.appendFileSync(w.filePath, "");
-        fs.utimesSync(w.filePath, future, future);
-      },
+      // Simulate Claude Code appending to the live session after surgery read
+      // the file but before it swaps the result in.
+      hooks: { beforeCheck: (round) => void (round === 1 && fs.appendFileSync(w.filePath, appended)) },
     });
 
-    expect(res.ok).toBe(false);
-    expect(res.reason).toContain("concurrent_modification");
-    // The original content (plus the external writer's no-op append) is intact;
-    // surgery did NOT overwrite it.
-    expect(fs.readFileSync(w.filePath, "utf8")).toBe(before);
+    expect(res.ok, res.reason).toBe(true);
+    expect(res.diagnostics.carried_tail_lines).toBe(1);
+    expect(fs.readFileSync(w.filePath, "utf8").endsWith(appended)).toBe(true);
   });
 });
 
@@ -214,9 +204,9 @@ describe("carrier fields", () => {
   });
 
   it("fails loud when a required carrier field is absent from every record", async () => {
-    // Drop `gitBranch` from all records — no sample carries it.
-    const { gitBranch, ...withoutBranch } = DISTINCT;
-    const w = track(workspaceFromText(sessionWith(withoutBranch)));
+    // Drop `version` from all records — no sample carries it.
+    const { version, ...withoutVersion } = DISTINCT;
+    const w = track(workspaceFromText(sessionWith(withoutVersion)));
     const before = fs.readFileSync(w.filePath, "utf8");
 
     const res = await performSurgery({
@@ -229,9 +219,26 @@ describe("carrier fields", () => {
 
     expect(res.ok).toBe(false);
     expect(res.reason).toContain("carrier_field_missing");
-    expect(res.reason).toContain("gitBranch");
+    expect(res.reason).toContain("version");
     // No mutation: the missing field is caught during planning, before any write.
     expect(fs.readFileSync(w.filePath, "utf8")).toBe(before);
     expect(fs.existsSync(w.backupDir)).toBe(false);
+  });
+
+  it("leaves an optional carrier field out rather than inventing it", async () => {
+    const { gitBranch, permissionMode, ...withoutOptional } = DISTINCT;
+    const w = track(workspaceFromText(sessionWith(withoutOptional)));
+    const res = await performSurgery({
+      file_path: w.filePath,
+      cut_through_uuid: "c2",
+      recap_content: RECAP_BODY("recap-002"),
+      backup_dir: w.backupDir,
+      sentinel_name: SENTINEL,
+    });
+    expect(res.ok, res.reason).toBe(true);
+    const injected = loadJsonl(w.filePath).find((r) => r.uuid === res.diagnostics.new_recap_uuid)!;
+    expect("gitBranch" in injected).toBe(false);
+    expect("permissionMode" in injected).toBe(false);
+    expect(injected.version).toBe(DISTINCT.version);
   });
 });

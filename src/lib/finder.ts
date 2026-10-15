@@ -6,20 +6,20 @@
  *   - timestamp       — last record before given ISO timestamp
  *   - anchor_offset   — find anchor phrase, then offset N records
  *
- * All methods support `excludeRecap` to skip recap injection messages
- * (identified by the configured recap sentinel — see config.sentinel_name).
+ * All methods support `excludeRecap` to skip injected recap records (see
+ * isRecapRecord in recaps.ts; the sentinel name is config.sentinel_name).
  */
 
 import {
   loadJsonl,
   getRecordText,
-  isRecapMessage,
   recordSummary,
   buildContextWindow,
   type JsonlRecord,
   type RecordSummary,
   type ContextWindow,
 } from "./jsonl.js";
+import { isRecapRecord } from "./recaps.js";
 
 export interface Match extends RecordSummary {
   context_before: RecordSummary[];
@@ -49,7 +49,7 @@ export function findMarkerPhrase(
   const matches: Match[] = [];
   for (let i = 0; i < records.length; i++) {
     const r = records[i]!;
-    if (excludeRecap && isRecapMessage(r, sentinelName)) continue;
+    if (excludeRecap && isRecapRecord(r, sentinelName)) continue;
     const text = getRecordText(r);
     if (text.includes(phrase)) {
       matches.push(buildMatch(records, i));
@@ -71,7 +71,7 @@ export function findTimestampBefore(
   let lastIdx = -1;
   for (let i = 0; i < records.length; i++) {
     const r = records[i]!;
-    if (excludeRecap && isRecapMessage(r, sentinelName)) continue;
+    if (excludeRecap && isRecapRecord(r, sentinelName)) continue;
     if (!r.timestamp) continue;
     const t = new Date(r.timestamp).getTime();
     if (isNaN(t)) continue;
@@ -198,4 +198,31 @@ export function findCutPoint(filePath: string, spec: FindSpec, sentinelName: str
     file: filePath,
     total_lines: records.length,
   };
+}
+
+export const AROUND_DEFAULT_SPAN = 30;
+export const AROUND_MAX_SPAN = 200;
+
+export interface RecordsAround {
+  file: string;
+  total_lines: number;
+  /** First and last line index returned (inclusive). */
+  from: number;
+  to: number;
+  records: RecordSummary[];
+}
+
+/**
+ * The records from `line - span` to `line + span`, summarized — for reading a
+ * seam in context. A cut is found this way far more often than by phrase
+ * alone: search the line, then read around it.
+ */
+export function recordsAround(filePath: string, line: number, span = AROUND_DEFAULT_SPAN): RecordsAround {
+  const records = loadJsonl(filePath);
+  const s = Math.min(Math.max(span, 1), AROUND_MAX_SPAN);
+  const from = Math.max(0, line - s);
+  const to = Math.min(records.length - 1, line + s);
+  const out: RecordSummary[] = [];
+  for (let i = from; i <= to; i++) out.push(recordSummary(records[i]!, i, 160));
+  return { file: filePath, total_lines: records.length, from, to, records: out };
 }

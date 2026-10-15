@@ -1,14 +1,21 @@
 /**
  * selfrecap — HTTP API for Claude Code session continuity.
  *
- * Endpoints:
- *   GET  /health           — liveness check
- *   GET  /voices           — list configured voices
- *   GET  /context/:voice   — read current context size for a registered voice
- *   GET  /context?path=... — read current context size for any JSONL path
- *   GET  /contexts         — aggregated context sizes for all voices
- *   POST /find-cut-point   — locate a record in JSONL by AI-supplied spec
- *   POST /surgery          — cut + inject recap + repair chain (dry-run by default)
+ * Endpoints (full reference: README.md):
+ *   GET  /health                      — liveness, version, config problem count
+ *   GET  /voices                      — configured voices, their files, config problems
+ *   GET  /voices/:voice/recap-plan    — everything a session needs for /remember
+ *   GET  /voices/:voice/records       — the records around a line (?around=&span=), for reading a seam
+ *   GET  /context/:voice              — context size of one voice (continuations followed)
+ *   GET  /context?path=...            — context size of any JSONL path under allowed_roots
+ *   GET  /contexts                    — every voice: context, recap stack, headroom, staleness, liveness
+ *   GET  /lifecycle                   — each voice: live or not, last nudge/restart event, nudge decision
+ *   POST /find-cut-point              — locate a record in a session by phrase / timestamp
+ *   POST /surgery                     — cut + inject a recap (dry_run first)
+ *
+ * Also runs the context nudger (src/lib/nudger.ts) when `nudge.enabled` is
+ * set: Windows only; a live session past `nudge.at` percent is told to recap
+ * and restart.
  *
  * Run:
  *   npx tsx src/server.ts
@@ -30,37 +37,52 @@ import os from "os";
 import path from "path";
 import crypto from "crypto";
 import { pathToFileURL } from "url";
-import { loadConfig, type AppConfig } from "./config.js";
+import { loadConfig, recapsDirOf, type AppConfig, type VoiceConfig } from "./config.js";
+import { VERSION } from "./version.js";
+import { resolveLiveSession } from "./lib/continuation.js";
+import { startNudger } from "./lib/nudger.js";
 import { registerFindCutPoint } from "./routes/find-cut-point.js";
 import { registerContext } from "./routes/context.js";
 import { registerContexts } from "./routes/contexts.js";
+import { registerLifecycle } from "./routes/lifecycle.js";
+import { registerRecapPlan } from "./routes/recap-plan.js";
+import { registerRecords } from "./routes/records.js";
 import { registerSurgery } from "./routes/surgery.js";
 
 interface VoiceInfo {
+  /** Live file — what every read and surgery actually targets. Only with expose_paths. */
   path?: string;
   exists: boolean;
   file_size_bytes: number | null;
   last_modified: string | null;
+  /** Session id of the live file. Differs from the configured one once a session is continued. */
+  live_session_id: string;
+  continuation_hops: number;
+  continuation_chain?: string[];
+  broken_link?: string;
+  has_recaps_folder: boolean;
+  has_restart: boolean;
 }
 
-function inspectVoice(filePath: string, exposePaths: boolean): VoiceInfo {
-  if (!fs.existsSync(filePath)) {
-    return {
-      ...(exposePaths ? { path: filePath } : {}),
-      exists: false,
-      file_size_bytes: null,
-      last_modified: null,
-    };
-  }
-  const stat = fs.statSync(filePath);
-  return {
+function inspectVoice(v: VoiceConfig, exposePaths: boolean): VoiceInfo {
+  const session = resolveLiveSession(v.session);
+  const live = session.resolved_path;
+  const base = {
     // Only surface the absolute path when expose_paths is on — otherwise a
     // misconfigured public clone would leak the user's home directory layout.
-    ...(exposePaths ? { path: filePath } : {}),
-    exists: true,
-    file_size_bytes: stat.size,
-    last_modified: stat.mtime.toISOString(),
+    ...(exposePaths ? { path: live } : {}),
+    live_session_id: path.basename(live, ".jsonl"),
+    continuation_hops: session.continuation_hops,
+    ...(session.continuation_chain ? { continuation_chain: session.continuation_chain } : {}),
+    ...(session.broken_link ? { broken_link: session.broken_link } : {}),
+    has_recaps_folder: recapsDirOf(v) !== null,
+    has_restart: !!v.restart,
   };
+  if (!fs.existsSync(live)) {
+    return { exists: false, file_size_bytes: null, last_modified: null, ...base };
+  }
+  const stat = fs.statSync(live);
+  return { exists: true, file_size_bytes: stat.size, last_modified: stat.mtime.toISOString(), ...base };
 }
 
 /**
@@ -172,10 +194,25 @@ export function buildApp(config: AppConfig, opts: { logger?: boolean } = {}): Bu
     }
   });
 
+  for (const problem of config.problems) app.log.warn(`[config] ${problem}`);
+
   // Startup validation — warn for any registered voice whose file is missing.
   const missing: string[] = [];
+  const continued: string[] = [];
   for (const [name, v] of Object.entries(config.voices)) {
-    if (!fs.existsSync(v.path)) missing.push(`${name} (${v.path})`);
+    const session = resolveLiveSession(v.session);
+    if (!fs.existsSync(session.resolved_path)) {
+      missing.push(`${name} (${v.session})`);
+      continue;
+    }
+    if (session.continuation_hops > 0) {
+      continued.push(
+        `${name}: anchor ${path.basename(v.session)} -> live ${path.basename(session.resolved_path)} (${session.continuation_hops} hop(s))`,
+      );
+    }
+  }
+  if (continued.length > 0) {
+    app.log.info(`[config] ${continued.length} voice(s) resolved through continuation: ${continued.join("; ")}`);
   }
   if (missing.length > 0) {
     app.log.warn(
@@ -186,20 +223,25 @@ export function buildApp(config: AppConfig, opts: { logger?: boolean } = {}): Bu
 
   app.get("/health", async () => ({
     status: "ok",
-    version: "1.0.0",
+    version: VERSION,
     voices_registered: Object.keys(config.voices).length,
     voices_missing_file: missing.length,
+    config_problems: config.problems.length,
   }));
 
   app.get("/voices", async () => ({
     voices: Object.fromEntries(
-      Object.entries(config.voices).map(([name, v]) => [name, inspectVoice(v.path, config.expose_paths)]),
+      Object.entries(config.voices).map(([name, v]) => [name, inspectVoice(v, config.expose_paths)]),
     ),
+    problems: config.problems,
   }));
 
   registerFindCutPoint(app, config);
   registerContext(app, config);
   registerContexts(app, config);
+  registerRecapPlan(app, config);
+  registerRecords(app, config);
+  registerLifecycle(app, config);
   registerSurgery(app, config);
 
   return { app, authToken, tokenPath };
@@ -213,6 +255,7 @@ async function main() {
     await app.listen({ port: config.server.port, host: config.server.host });
     app.log.info(`selfrecap listening on http://${config.server.host}:${config.server.port}`);
     app.log.info(`Configured voices: ${Object.keys(config.voices).join(", ") || "(none)"}`);
+    startNudger(config, { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) });
   } catch (err) {
     app.log.error(err);
     process.exit(1);

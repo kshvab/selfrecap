@@ -1,22 +1,31 @@
 /**
  * POST /surgery
  *
- * Cut + inject + parentUuid repair. The Phase 2 endpoint.
+ * Cut + inject + parentUuid repair, swapped in safely under a live session.
  *
  * AI provides:
  *   - voice OR file_path
  *   - cut_through_uuid (from /find-cut-point)
- *   - recap_content (the user-facing message body, must contain the configured sentinel)
+ *   - recap_content (the body; must end with the configured recap sentinel,
+ *     whose id, for a voice, is the next in its recap stack — see
+ *     /voices/:voice/recap-plan)
  *   - dry_run (boolean) — recommended on first call
+ *   - force_overwrite_recap — only to delete a recap record outside the leading stack
  *
- * Server enforces safety invariants before any mutation. See lib/surgery.ts.
+ * The response adds live_session_id and, for a voice with a restart
+ * template, the exact restart_command. Refusals (the caller can fix the
+ * input) come back as 400 with ok:false, a reason, and the full diagnostics;
+ * a swap that could not be done because the file kept changing is 409 (the
+ * live file is unchanged; retry); a backup that could not be written is 500.
+ * See lib/surgery.ts for what is checked and how the swap works.
  */
 
+import path from "path";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { performSurgery } from "../lib/surgery.js";
 import type { AppConfig } from "../config.js";
-import { resolvePath } from "../config.js";
+import { UnknownVoiceError, resolvePath, restartCommandFor } from "../config.js";
 
 const RequestSchema = z
   .object({
@@ -44,39 +53,45 @@ export function registerSurgery(app: FastifyInstance, config: AppConfig) {
     }
     const body = parse.data;
 
-    let resolved: { path: string; voice?: string };
+    let resolved: ReturnType<typeof resolvePath>;
     try {
       resolved = resolvePath(config, body.voice, body.file_path);
     } catch (e: any) {
-      return reply.status(400).send({ error: "path_resolution_failed", message: e.message });
+      const status = e instanceof UnknownVoiceError ? 404 : 400;
+      return reply.status(status).send({ error: status === 404 ? "voice_not_found" : "path_resolution_failed", message: e.message });
     }
 
-    const result = await performSurgery({
-      file_path: resolved.path,
-      cut_through_uuid: body.cut_through_uuid,
-      recap_content: body.recap_content,
-      voice: resolved.voice,
-      backup_dir: config.backup_dir,
-      sentinel_name: config.sentinel_name,
-      expose_paths: config.expose_paths,
-      dry_run: body.dry_run,
-      force_overwrite_recap: body.force_overwrite_recap,
-    });
+    let result: ReturnType<typeof performSurgery>;
+    try {
+      result = performSurgery({
+        file_path: resolved.path,
+        cut_through_uuid: body.cut_through_uuid,
+        recap_content: body.recap_content,
+        voice: resolved.voice,
+        backup_dir: config.backup_dir,
+        sentinel_name: config.sentinel_name,
+        expose_paths: config.expose_paths,
+        dry_run: body.dry_run,
+        force_overwrite_recap: body.force_overwrite_recap,
+        broken_link: resolved.session?.broken_link,
+      });
+    } catch (e: any) {
+      // performSurgery reports its own refusals; a throw is unexpected, and the
+      // swap may or may not have happened. Say so rather than guess.
+      return reply.status(500).send({
+        error: "surgery_failed",
+        message: `${e.message}. Surgery stopped unexpectedly: check the session with recap.ts --plan before retrying.`,
+      });
+    }
 
-    // A write_failed (or any post-write/validation failure) is a server-side
-    // failure, not a bad request — surface those as 500. Plan-level rejections
-    // (bad uuid, sentinel missing, etc.) remain 400 (caller can fix the input).
-    const serverSideFailure =
-      !result.ok &&
-      (result.reason?.startsWith("write_failed") ||
-        result.reason?.startsWith("backup_failed") ||
-        result.reason?.startsWith("post_write_validation_failed") ||
-        result.reason?.startsWith("concurrent_modification"));
-    const status = result.ok ? 200 : serverSideFailure ? 500 : 400;
-
+    const reason = result.reason ?? "";
+    const status = result.ok ? 200 : reason.startsWith("backup_failed") ? 500 : reason.startsWith("not_applied") ? 409 : 400;
+    const liveSessionId = path.basename(resolved.path, ".jsonl");
     return reply.status(status).send({
       ...result,
       voice: resolved.voice,
+      live_session_id: liveSessionId,
+      restart_command: resolved.voice ? restartCommandFor(config.voices[resolved.voice], liveSessionId) : null,
     });
   });
 }

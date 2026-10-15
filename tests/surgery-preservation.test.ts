@@ -7,8 +7,8 @@
  * were re-serialized from their parsed form, so:
  *   - an unparseable line (parses to `{}`) was written back as `{}` (data loss);
  *   - even valid lines could drift (key order / unicode escaping).
- * These tests lock both failure modes shut, plus the fail-loud guard for an
- * unparseable FIRST survivor (whose chain can't be safely repaired).
+ * These tests lock both failure modes shut, plus the refusal for an
+ * unparseable record in the chain (the resumed session could not walk it).
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -64,15 +64,17 @@ function recordLine(opts: {
 
 describe("surgery byte-preservation (survivors)", () => {
   it("preserves an unparseable SURVIVOR line byte-for-byte (does NOT turn it into {})", async () => {
-    // Cut through u02. Survivors are u03 (first), then a MALFORMED line, then u05.
+    // Cut through u02. Survivors are u03 (first), then a MALFORMED line, then
+    // u05. The malformed line is not in the chain (u05 hangs off u03), so the
+    // resumed session can still walk from u05 to the recap.
     const malformed = '{"uuid":"u04","parentUuid":"u03","broken';
     const lines = [
       recordLine({ uuid: "u00", parentUuid: null, type: "user", content: "first message" }),
       recordLine({ uuid: "u01", parentUuid: "u00", type: "assistant", content: "reply" }),
-      recordLine({ uuid: "u02", parentUuid: "u01", type: "user", content: "cut here" }),
+      recordLine({ uuid: "u02", parentUuid: "u01", type: "assistant", content: "cut here" }),
       recordLine({ uuid: "u03", parentUuid: "u02", type: "assistant", content: "first survivor" }),
       malformed,
-      recordLine({ uuid: "u05", parentUuid: "u04", type: "assistant", content: "last survivor" }),
+      recordLine({ uuid: "u05", parentUuid: "u03", type: "assistant", content: "last survivor" }),
     ];
     const w = newWorkspace(lines.join("\n") + "\n");
 
@@ -83,7 +85,7 @@ describe("surgery byte-preservation (survivors)", () => {
       backup_dir: w.backupDir,
       sentinel_name: SENTINEL,
     });
-    expect(res.ok).toBe(true);
+    expect(res.ok, res.reason).toBe(true);
 
     // The exact malformed line must survive verbatim — NOT be rewritten as "{}".
     const out = fs.readFileSync(w.filePath, "utf8");
@@ -102,7 +104,7 @@ describe("surgery byte-preservation (survivors)", () => {
     const lines = [
       recordLine({ uuid: "u00", parentUuid: null, type: "user", content: "first message" }),
       recordLine({ uuid: "u01", parentUuid: "u00", type: "assistant", content: "reply" }),
-      recordLine({ uuid: "u02", parentUuid: "u01", type: "user", content: "cut here" }),
+      recordLine({ uuid: "u02", parentUuid: "u01", type: "assistant", content: "cut here" }),
       recordLine({ uuid: "u03", parentUuid: "u02", type: "assistant", content: "first survivor" }),
       quirky,
       recordLine({ uuid: "u05", parentUuid: "u04", type: "user", content: "last survivor" }),
@@ -123,14 +125,16 @@ describe("surgery byte-preservation (survivors)", () => {
     expect(outLines).toContain(quirky);
   });
 
-  it("fails loud (first_survivor_unparseable) and does NOT mutate the file", async () => {
-    // The FIRST survivor (index cutIdx+1) is malformed: we cannot repoint its
-    // parentUuid safely, so surgery must refuse and leave the file untouched.
+  it("refuses when an unparseable first survivor breaks the chain, and does NOT mutate the file", async () => {
+    // The FIRST survivor (index cutIdx+1) is malformed: its parentUuid cannot
+    // be repointed, and the last record's chain runs through it, so the resumed
+    // session could never reach the recap. Surgery must refuse and leave the
+    // file untouched.
     const malformedFirst = '{"uuid":"u03","parentUuid":"u02","broken';
     const lines = [
       recordLine({ uuid: "u00", parentUuid: null, type: "user", content: "first message" }),
       recordLine({ uuid: "u01", parentUuid: "u00", type: "assistant", content: "reply" }),
-      recordLine({ uuid: "u02", parentUuid: "u01", type: "user", content: "cut here" }),
+      recordLine({ uuid: "u02", parentUuid: "u01", type: "assistant", content: "cut here" }),
       malformedFirst,
       recordLine({ uuid: "u04", parentUuid: "u03", type: "assistant", content: "survivor" }),
     ];
@@ -149,7 +153,7 @@ describe("surgery byte-preservation (survivors)", () => {
       sentinel_name: SENTINEL,
     });
     expect(res.ok).toBe(false);
-    expect(res.reason).toContain("first_survivor_unparseable");
+    expect(res.reason).toMatch(/^chain_broken/);
 
     // File is byte-identical (no mutation, no partial write).
     const afterHash = crypto
@@ -163,7 +167,7 @@ describe("surgery byte-preservation (survivors)", () => {
     const lines = [
       recordLine({ uuid: "u00", parentUuid: null, type: "user", content: "first message" }),
       recordLine({ uuid: "u01", parentUuid: "u00", type: "assistant", content: "reply" }),
-      recordLine({ uuid: "u02", parentUuid: "u01", type: "user", content: "cut here" }),
+      recordLine({ uuid: "u02", parentUuid: "u01", type: "assistant", content: "cut here" }),
       recordLine({ uuid: "u03", parentUuid: "u02", type: "assistant", content: "first survivor" }),
       recordLine({ uuid: "u04", parentUuid: "u03", type: "user", content: "second survivor" }),
     ];
@@ -200,7 +204,7 @@ describe("surgery byte-preservation (survivors)", () => {
     const lines = [
       recordLine({ uuid: "u00", parentUuid: null, type: "user", content: "first message" }),
       recordLine({ uuid: "u01", parentUuid: "u00", type: "assistant", content: "reply" }),
-      recordLine({ uuid: "u02", parentUuid: "u01", type: "user", content: "cut here" }),
+      recordLine({ uuid: "u02", parentUuid: "u01", type: "assistant", content: "cut here" }),
       recordLine({ uuid: "u03", parentUuid: "u02", type: "assistant", content: "first survivor" }),
       recordLine({ uuid: "u04", parentUuid: "u03", type: "user", content: "second survivor" }),
     ];
